@@ -1,0 +1,127 @@
+:root {
+  color-scheme: light;
+  font-family: "PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif;
+  background:
+    radial-gradient(circle at top left, #ffe8c7, transparent 42%),
+    linear-gradient(180deg, #f7f2e8 0%, #efe6d5 100%);
+  color: #1d1d1f;
+}
+
+body {
+  margin: 0;
+  min-width: 720px;
+}
+
+.app {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.hero h1 {
+  margin: 4px 0 8px;
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #8a5a16;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.subtitle {
+  margin: 0;
+  color: #5d564c;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.panel {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(69, 47, 19, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 252, 247, 0.94);
+  box-shadow: 0 16px 30px rgba(98, 73, 33, 0.08);
+}
+
+.status {
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.status-loading {
+  background: #f3ead8;
+  color: #7b5b28;
+}
+
+.status-ready {
+  background: #e2f1e4;
+  color: #225a2d;
+}
+
+.status-error {
+  background: #f9dfdf;
+  color: #8d2323;
+}
+
+.stats {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(142, 110, 61, 0.16);
+  background: rgba(255, 249, 239, 0.92);
+  display: grid;
+  gap: 6px;
+}
+
+.stat-label {
+  color: #856f4e;
+  font-size: 12px;
+}
+
+.stat-value {
+  color: #2d2419;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.log {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+  min-height: 240px;
+  max-height: 520px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid rgba(142, 110, 61, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 249, 239, 0.92);
+}
+
+.log-entry {
+  color: #3f3322;
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.log-entry-success {
+  color: #2a6a39;
+}
+
+.log-entry-error {
+  color: #9a3030;
+}

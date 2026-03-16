@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档本地导出</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <p class="eyebrow">MVP</p>
+        <h1>文档本地导出</h1>
+        <p class="subtitle">当前版本支持飞书 `docx/wiki` 与微信公众号文章导出到本地。</p>
+      </header>
+
+      <section class="panel">
+        <div id="status" class="status status-loading">正在检测当前页面…</div>
+
+        <div class="meta">
+          <div class="meta-row">
+            <span class="meta-label">标题</span>
+            <span id="docTitle" class="meta-value">-</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">类型</span>
+            <span id="docType" class="meta-value">-</span>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="exportMarkdown" class="button button-primary" disabled>导出 Markdown</button>
+          <button id="exportJson" class="button" disabled>导出 JSON</button>
+        </div>
+
+        <label class="toggle" for="includeImages">
+          <input id="includeImages" type="checkbox" checked>
+          <span class="toggle-copy">
+            <span class="toggle-title">Markdown 包含图片</span>
+            <span class="toggle-desc">关闭后只导出正文文字和标题，不抓取图片。这个选项同时作用于单篇导出、批量下载和公众号范围下载。</span>
+          </span>
+        </label>
+
+        <p class="hint">Markdown 会按站点分别导出：飞书走 `client_vars` 结构化数据，公众号走正文 HTML 提取；JSON 则保留调试所需原始数据。</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>批量下载</h2>
+          <p class="subtitle-inline">点击开始后会打开独立任务页。后续批量下载会在任务页里继续执行，不再依赖这个弹窗保持打开。</p>
+        </div>
+
+        <div id="batchStatus" class="status status-loading">尚未开始批量任务。</div>
+
+        <div class="field-group">
+          <label class="field-label" for="batchLinks">文章链接列表</label>
+          <textarea
+            id="batchLinks"
+            class="text-input text-area"
+            placeholder="每行一个链接。支持飞书 docx/wiki 与微信公众号文章链接。"
+          ></textarea>
+          <label class="toggle" for="batchZipOutput">
+            <input id="batchZipOutput" type="checkbox" checked>
+            <span class="toggle-copy">
+              <span class="toggle-title">批量结果打包为 ZIP</span>
+              <span class="toggle-desc">推荐开启。批量任务会把所有 Markdown 打成一个 ZIP，更方便管理和分享。</span>
+            </span>
+          </label>
+          <button id="batchDownloadLinks" class="button button-primary">批量下载链接列表</button>
+          <div id="batchLog" class="log" aria-live="polite"></div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="note-card">
+          <p class="note-title">公众号范围下载</p>
+          <p class="note-copy">推荐走浏览器里的公众号后台登录态。只要你在当前 Chrome 里登录过 `mp.weixin.qq.com`，扩展就能自动发现同号历史文章并继续批量下载。</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>公众号后台模式</h2>
+          <p class="subtitle-inline">推荐方案。无需本地 helper、无需系统代理、无需手机微信，只复用你当前 Chrome 里的 `mp.weixin.qq.com` 登录态。</p>
+        </div>
+
+        <div id="helperStatus" class="status status-loading">尚未检测公众号后台登录状态。</div>
+
+        <div class="field-group">
+          <label class="field-label" for="helperSeedUrl">种子文章链接</label>
+          <textarea
+            id="helperSeedUrl"
+            class="text-input text-area text-area-compact"
+            placeholder="粘贴该公众号任意一篇文章链接，扩展会用它识别公众号并定位同号历史文章。"
+          ></textarea>
+        </div>
+
+        <div class="field-row">
+          <div class="field-group field-group-tight">
+            <label class="field-label" for="helperStartDate">开始日期</label>
+            <input id="helperStartDate" class="text-input" type="date">
+          </div>
+          <div class="field-group field-group-tight">
+            <label class="field-label" for="helperEndDate">结束日期</label>
+            <input id="helperEndDate" class="text-input" type="date">
+          </div>
+        </div>
+
+        <label class="toggle toggle-compact" for="includeImagesHelper">
+          <input id="includeImagesHelper" type="checkbox" checked>
+          <span class="toggle-copy">
+            <span class="toggle-title">下载正文图片</span>
+            <span class="toggle-desc">关闭后只导出正文文字，速度更快，也更适合做 AI 分析。</span>
+          </span>
+        </label>
+
+        <div class="actions actions-uneven">
+          <button id="helperCheck" class="button">检测后台登录</button>
+          <button id="openWechatMpLogin" class="button">打开后台登录页</button>
+          <button id="helperDownload" class="button button-primary">按范围批量下载</button>
+        </div>
+
+        <div id="helperLog" class="log" aria-live="polite"></div>
+        <p class="hint hint-tight">如果还没在当前 Chrome 里登录 `mp.weixin.qq.com`，先点“打开后台登录页”完成一次登录，再回来执行“按范围批量下载”。</p>
+      </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

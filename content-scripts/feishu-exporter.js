@@ -1,0 +1,2189 @@
+(function () {
+  const MESSAGE_GET_PAGE_INFO = "feishu-export:get-page-info";
+  const MESSAGE_EXPORT_DOCUMENT = "feishu-export:export-document";
+  const MESSAGE_GET_WECHAT_HISTORY_SEED = "feishu-export:get-wechat-history-seed";
+  const MESSAGE_GET_WECHAT_MP_LOGIN_STATUS = "feishu-export:get-wechat-mp-login-status";
+  const MESSAGE_RESOLVE_WECHAT_MP_HISTORY = "feishu-export:resolve-wechat-mp-history";
+  const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
+  const WECHAT_MP_LOGIN_URL = "https://mp.weixin.qq.com/";
+  const WECHAT_MP_SEARCH_COUNT = 10;
+  const WECHAT_MP_ARTICLE_PAGE_SIZE = 5;
+  const WECHAT_MP_CANDIDATE_LIMIT = 6;
+  const WECHAT_MP_SEED_SCAN_LIMIT = 80;
+  const WECHAT_MP_HISTORY_SCAN_LIMIT = 500;
+  const WECHAT_MP_PAGE_DELAY_MS = 250;
+  const TYPE_MAP = {
+    22: "docx",
+    2: "docs",
+    3: "sheets",
+    8: "base",
+    12: "file"
+  };
+  const STYLE_WHITELIST = [
+    "display",
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "padding",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "font",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "font-family",
+    "line-height",
+    "letter-spacing",
+    "color",
+    "background",
+    "background-color",
+    "text-align",
+    "text-decoration",
+    "text-indent",
+    "white-space",
+    "word-break",
+    "overflow-wrap",
+    "list-style",
+    "list-style-type",
+    "border",
+    "border-top",
+    "border-right",
+    "border-bottom",
+    "border-left",
+    "border-radius",
+    "box-sizing",
+    "width",
+    "height",
+    "max-width",
+    "min-width",
+    "vertical-align",
+    "gap",
+    "grid-template-columns",
+    "justify-content",
+    "align-items"
+  ];
+  const ATTRIBUTE_WHITELIST = new Set([
+    "href",
+    "src",
+    "alt",
+    "colspan",
+    "rowspan"
+  ]);
+  const INVISIBLE_TEXT_RE = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+  const EXPORT_SKIP_SELECTOR = [
+    ".catalogue-container",
+    ".catalogue",
+    ".catalogue__main",
+    ".catalogue__main-wrapper",
+    ".catalogue__scroller",
+    ".doc-cover-toolbar",
+    "#docCommentContainer",
+    ".docx-comment-numbers",
+    ".docx-comment__first-comment-btn",
+    "#ai-suggestion-container",
+    ".rangecode-bomb-container-bottom",
+    "iframe",
+    "script",
+    "style",
+    "noscript"
+  ].join(",");
+  const WECHAT_REMOVE_SELECTOR = [
+    "script",
+    "style",
+    "noscript",
+    ".js_mp_wording_wrp",
+    ".js_ad_link",
+    ".js_product_container",
+    ".js_product_loop_content",
+    ".js_minipro_dialog_container",
+    ".weapp_display_element",
+    ".wx_profile_card_inner",
+    ".wx_profile_card",
+    ".original_area_primary",
+    ".original_primary_card_tips",
+    ".reward_wrapper",
+    ".discuss_container",
+    ".js_comment_area",
+    ".js_tags_area",
+    ".js_unread_area",
+    ".js_related_article",
+    ".js_recommend_container",
+    ".mp_profile_iframe_wrp",
+    ".js_img_loading"
+  ].join(",");
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || ![
+      MESSAGE_GET_PAGE_INFO,
+      MESSAGE_EXPORT_DOCUMENT,
+      MESSAGE_GET_WECHAT_HISTORY_SEED,
+      MESSAGE_GET_WECHAT_MP_LOGIN_STATUS,
+      MESSAGE_RESOLVE_WECHAT_MP_HISTORY
+    ].includes(message.type)) {
+      return false;
+    }
+
+    handleMessage(message)
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || "处理失败" }));
+
+    return true;
+  });
+
+  async function handleMessage(message) {
+    if (message.type === MESSAGE_GET_PAGE_INFO) {
+      return getPageInfo();
+    }
+
+    if (message.type === MESSAGE_EXPORT_DOCUMENT) {
+      return exportDocument(message.format, message.options || {});
+    }
+
+    if (message.type === MESSAGE_GET_WECHAT_HISTORY_SEED) {
+      return getWechatHistorySeed();
+    }
+
+    if (message.type === MESSAGE_GET_WECHAT_MP_LOGIN_STATUS) {
+      return getWechatMpLoginStatus();
+    }
+
+    if (message.type === MESSAGE_RESOLVE_WECHAT_MP_HISTORY) {
+      return resolveWechatMpHistory(message.startDate, message.endDate);
+    }
+
+    throw new Error("不支持的消息类型");
+  }
+
+  async function getPageInfo() {
+    if (isFeishuPage()) {
+      const meta = await getDocumentMeta({ resolveWiki: false });
+
+      return {
+        title: meta.title,
+        docType: meta.pageType,
+        supports: ["markdown", "json"]
+      };
+    }
+
+    if (isWechatArticlePage()) {
+      const meta = getWechatArticleMeta();
+
+      return {
+        title: meta.title,
+        docType: meta.pageType,
+        supports: ["markdown", "json"]
+      };
+    }
+
+    if (isWechatMpBackendPage()) {
+      return {
+        title: "公众号后台",
+        docType: "公众号后台",
+        supports: []
+      };
+    }
+
+    throw new Error("当前页面不是受支持的飞书或微信公众号页面");
+  }
+
+  async function exportDocument(format, options) {
+    if (!["markdown", "json"].includes(format)) {
+      throw new Error("不支持的导出格式");
+    }
+
+    if (isFeishuPage()) {
+      return exportFeishuDocument(format, options);
+    }
+
+    if (isWechatArticlePage()) {
+      return exportWechatDocument(format, options);
+    }
+
+    throw new Error("当前页面不是受支持的飞书或微信公众号页面");
+  }
+
+  async function exportFeishuDocument(format, options) {
+    const meta = await getDocumentMeta({ resolveWiki: true });
+
+    if (format === "markdown") {
+      const clientVars = await fetchClientVars(meta.exportToken, meta.jssdkSession);
+      let markdownBody = await convertClientVarsToMarkdown(meta, clientVars, options);
+      if (options.includeImages === false) {
+        markdownBody = stripMarkdownImages(markdownBody);
+      }
+      const markdown = buildMarkdownDocument(meta, markdownBody);
+
+      return {
+        filename: buildFilename(meta.title, "md"),
+        mimeType: "text/markdown;charset=utf-8",
+        content: markdown
+      };
+    }
+
+    const clientVars = await fetchClientVars(meta.exportToken, meta.jssdkSession);
+    const payload = {
+      meta: {
+        title: meta.title,
+        pageType: meta.pageType,
+        exportType: meta.exportType,
+        sourceUrl: location.href,
+        exportedAt: new Date().toISOString()
+      },
+      clientVars
+    };
+
+    return {
+      filename: buildFilename(meta.title, "json"),
+      mimeType: "application/json;charset=utf-8",
+      content: JSON.stringify(payload, null, 2)
+    };
+  }
+
+  async function exportWechatDocument(format, options) {
+    const meta = getWechatArticleMeta();
+    const liveRoot = getWechatArticleRoot();
+    const rawHtml = liveRoot.innerHTML;
+
+    if (format === "markdown") {
+      const clonedRoot = liveRoot.cloneNode(true);
+      await sanitizeWechatArticle(clonedRoot, { includeImages: options.includeImages !== false });
+      let markdownBody = cleanupMarkdown(convertBlock(clonedRoot, 0));
+      if (options.includeImages === false) {
+        markdownBody = stripMarkdownImages(markdownBody);
+      }
+
+      if (!markdownBody) {
+        throw new Error("未提取到公众号正文");
+      }
+
+      return {
+        filename: buildFilename(meta.title, "md"),
+        mimeType: "text/markdown;charset=utf-8",
+        content: buildMarkdownDocument(meta, markdownBody)
+      };
+    }
+
+    const clonedRoot = liveRoot.cloneNode(true);
+    await sanitizeWechatArticle(clonedRoot, { includeImages: false });
+
+    const payload = {
+      meta: {
+        title: meta.title,
+        pageType: meta.pageType,
+        sourceUrl: location.href,
+        author: meta.author || "",
+        publishTime: meta.publishTime || "",
+        exportedAt: new Date().toISOString()
+      },
+      articleHtml: rawHtml,
+      cleanedHtml: clonedRoot.innerHTML
+    };
+
+    return {
+      filename: buildFilename(meta.title, "json"),
+      mimeType: "application/json;charset=utf-8",
+      content: JSON.stringify(payload, null, 2)
+    };
+  }
+
+  function isFeishuPage() {
+    return /(^|\.)((feishu\.cn)|(larksuite\.com)|(larkoffice\.com))$/.test(location.hostname)
+      && /^\/(docx|wiki)\//.test(location.pathname);
+  }
+
+  function isWechatArticlePage() {
+    return location.hostname === "mp.weixin.qq.com" && /^\/s(?:$|\/)/.test(location.pathname);
+  }
+
+  function isWechatMpBackendPage() {
+    return location.hostname === "mp.weixin.qq.com" && /^\/cgi-bin\//.test(location.pathname);
+  }
+
+  async function getDocumentMeta(options) {
+    const parsed = parseCurrentUrl();
+    const title = extractVisibleTitle() || normalizeTitle(document.title);
+    const jssdkSession = extractJssdkSession();
+    const meta = {
+      pageType: parsed.type,
+      exportType: parsed.type,
+      pageToken: parsed.token,
+      exportToken: parsed.token,
+      title,
+      jssdkSession
+    };
+
+    if (parsed.type === "wiki" && options.resolveWiki) {
+      const wikiInfo = await resolveWikiToken(parsed.token, jssdkSession);
+      if (wikiInfo.docType !== "docx") {
+        throw new Error("当前 wiki 页面不是 docx 文档，MVP 暂不支持");
+      }
+
+      meta.exportType = wikiInfo.docType;
+      meta.exportToken = wikiInfo.docToken;
+      meta.title = normalizeTitle(wikiInfo.title || title);
+    }
+
+    return meta;
+  }
+
+  function parseCurrentUrl() {
+    const match = location.pathname.match(/^\/(docx|wiki)\/([^/?#]+)/);
+    if (!match) {
+      throw new Error("当前页面不是受支持的飞书 docx/wiki 页面");
+    }
+
+    return {
+      type: match[1],
+      token: match[2]
+    };
+  }
+
+  function extractJssdkSession() {
+    const patterns = [
+      /__jssdkSession__\s*=\s*['"]([^'"]+)['"]/,
+      /"__jssdkSession__"\s*:\s*"([^"]+)"/,
+      /"jssdkSession"\s*:\s*"([^"]+)"/
+    ];
+
+    for (const script of Array.from(document.scripts)) {
+      const content = script.textContent || "";
+      for (const pattern of patterns) {
+        const match = content.match(pattern);
+        if (match?.[1]) {
+          return match[1];
+        }
+      }
+    }
+
+    return null;
+  }
+
+  async function resolveWikiToken(wikiToken, jssdkSession) {
+    const url = `${location.origin}/space/api/wiki/v2/tree/get_node/?wiki_token=${encodeURIComponent(wikiToken)}`;
+    const response = await fetch(url, {
+      credentials: "include",
+      headers: buildHeaders(jssdkSession)
+    });
+
+    if (!response.ok) {
+      throw new Error(`获取 wiki 信息失败: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    if (payload.code !== 0 || !payload.data) {
+      throw new Error(payload.msg || "获取 wiki 信息失败");
+    }
+
+    return {
+      docType: TYPE_MAP[payload.data.obj_type] || "unsupported",
+      docToken: payload.data.obj_token || wikiToken,
+      title: payload.data.title || ""
+    };
+  }
+
+  async function fetchClientVars(docToken, jssdkSession) {
+    const url = `${location.origin}/space/api/docx/pages/client_vars?id=${encodeURIComponent(docToken)}`;
+    const response = await fetch(url, {
+      credentials: "include",
+      headers: buildHeaders(jssdkSession)
+    });
+
+    if (!response.ok) {
+      throw new Error(`获取 docx 数据失败: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    if (payload.code !== 0) {
+      throw new Error(payload.msg || "获取 docx 数据失败");
+    }
+
+    return payload;
+  }
+
+  function buildHeaders(jssdkSession) {
+    return jssdkSession ? { "jssdk-session": jssdkSession } : {};
+  }
+
+  function getWechatArticleMeta() {
+    const title = normalizeWechatTitle(
+      document.querySelector("#activity-name .js_title_inner")?.textContent
+      || document.querySelector("#activity-name")?.textContent
+      || document.querySelector('meta[property="og:title"]')?.getAttribute("content")
+      || document.title
+    );
+    const author = cleanupInline(
+      document.querySelector("#js_name")?.textContent
+      || document.querySelector(".rich_media_meta_nickname")?.textContent
+      || ""
+    );
+    const publishTime = cleanupInline(document.querySelector("#publish_time")?.textContent || "");
+
+    return {
+      pageType: "公众号文章",
+      exportType: "wechat-article",
+      title: title || "未命名文章",
+      author,
+      publishTime
+    };
+  }
+
+  function getWechatHistorySeed() {
+    if (!isWechatArticlePage()) {
+      throw new Error("当前页面不是微信公众号文章页面");
+    }
+
+    const meta = getWechatArticleMeta();
+    const biz = extractWechatBiz();
+    const identity = extractWechatArticleIdentity();
+
+    if (!biz) {
+      throw new Error("未能识别当前文章的公众号 biz");
+    }
+
+    return {
+      seedUrl: location.href,
+      biz,
+      nickname: meta.author || "",
+      title: meta.title,
+      publishTime: meta.publishTime || "",
+      publishTimestamp: identity.publishTimestamp || 0,
+      canonicalUrl: identity.canonicalUrl || location.href,
+      articleKey: identity.articleKey || "",
+      articleId: identity.articleId || "",
+      mid: identity.mid || "",
+      idx: identity.idx || "",
+      sn: identity.sn || "",
+      profileUrl: buildWechatProfileUrl(biz)
+    };
+  }
+
+  async function getWechatMpLoginStatus() {
+    const session = await getWechatMpSession();
+    return {
+      loggedIn: session.loggedIn,
+      token: session.token || "",
+      accountName: session.accountName || "",
+      homeUrl: session.homeUrl || "",
+      loginUrl: WECHAT_MP_LOGIN_URL
+    };
+  }
+
+  async function resolveWechatMpHistory(startDate, endDate) {
+    if (!isWechatArticlePage()) {
+      throw new Error("请在微信公众号种子文章页中发起范围下载");
+    }
+
+    if (!startDate || !endDate) {
+      throw new Error("缺少开始或结束日期");
+    }
+
+    const seedMeta = getWechatHistorySeed();
+    const session = await getWechatMpSession();
+    const logs = [];
+
+    if (!session.loggedIn || !session.token) {
+      logs.push("未检测到当前 Chrome 的公众号后台登录态。");
+      return {
+        loginRequired: true,
+        loginUrl: WECHAT_MP_LOGIN_URL,
+        seedMeta,
+        links: [],
+        logs,
+        message: "未检测到当前 Chrome 的公众号后台登录态，请先登录 mp.weixin.qq.com。"
+      };
+    }
+
+    logs.push(`已检测到公众号后台登录态${session.accountName ? ` (${session.accountName})` : ""}。`);
+
+    const result = await resolveWechatHistoryLinksWithMpBackend(seedMeta, session, startDate, endDate, logs);
+    return {
+      ...result,
+      loginRequired: false,
+      loginUrl: WECHAT_MP_LOGIN_URL,
+      seedMeta,
+      logs
+    };
+  }
+
+  function getWechatArticleRoot() {
+    const selectors = [
+      "#js_content",
+      "#img-content #js_content",
+      "#js_article #js_content"
+    ];
+
+    for (const selector of selectors) {
+      const node = document.querySelector(selector);
+      if (node) {
+        return node;
+      }
+    }
+
+    throw new Error("未找到公众号正文节点 #js_content");
+  }
+
+  function extractWechatBiz() {
+    const directCandidates = [
+      new URL(location.href).searchParams.get("__biz"),
+      document.querySelector('meta[property="og:url"]')?.getAttribute("content") || ""
+    ];
+
+    for (const candidate of directCandidates) {
+      const value = extractBizFromString(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    const patterns = [
+      /(?:var|let|const)\s+biz\s*=\s*["']([^"']+)["']/,
+      /window\.biz\s*=\s*["']([^"']+)["']/,
+      /"biz"\s*:\s*"([^"]+)"/,
+      /__biz=([^&"'\\]+)/,
+      /nickname=decodeURIComponent\("([^"]+)"\)/
+    ];
+
+    for (const script of Array.from(document.scripts)) {
+      const content = script.textContent || "";
+      for (const pattern of patterns) {
+        const match = content.match(pattern);
+        if (!match?.[1]) {
+          continue;
+        }
+
+        const value = extractBizFromString(match[1]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+
+    return "";
+  }
+
+  function extractBizFromString(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(raw);
+      return parsed.searchParams.get("__biz") || "";
+    } catch (error) {
+      return raw.startsWith("Mz") ? raw : "";
+    }
+  }
+
+  function buildWechatProfileUrl(biz) {
+    return `https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=${encodeURIComponent(biz)}#wechat_redirect`;
+  }
+
+  async function getWechatMpSession() {
+    const response = await fetch(WECHAT_MP_LOGIN_URL, {
+      credentials: "include",
+      redirect: "follow",
+      cache: "no-store"
+    });
+    const html = await response.text();
+    const finalUrl = response.url || WECHAT_MP_LOGIN_URL;
+    const token = extractWechatMpToken(finalUrl) || extractWechatMpToken(html);
+
+    return {
+      loggedIn: Boolean(token),
+      token,
+      homeUrl: token ? buildWechatMpHomeUrl(token) : finalUrl,
+      accountName: extractWechatMpAccountName(html),
+      finalUrl
+    };
+  }
+
+  async function resolveWechatHistoryLinksWithMpBackend(seedMeta, session, startDate, endDate, logs) {
+    const searchQuery = seedMeta.nickname || "";
+    if (!searchQuery) {
+      throw new Error("未能从种子文章中识别公众号名称");
+    }
+
+    const candidates = await searchWechatMpAccounts(searchQuery, session);
+    if (candidates.length === 0) {
+      throw new Error(`公众号后台没有搜到“${searchQuery}”对应的公众号`);
+    }
+
+    logs.push(`后台搜索“${searchQuery}”返回 ${candidates.length} 个候选公众号。`);
+
+    const matchedAccount = await resolveWechatMpAccountCandidate(candidates, seedMeta, session, logs);
+    if (!matchedAccount) {
+      throw new Error(`未能在公众号后台里定位到“${searchQuery}”对应账号`);
+    }
+
+    logs.push(`已匹配目标公众号：${formatWechatMpAccount(matchedAccount)}。`);
+
+    const articles = await fetchWechatMpArticlesInRange(matchedAccount.fakeid, session, startDate, endDate, logs);
+    const links = uniqueStrings(
+      articles
+        .map((article) => article.url)
+        .filter((url) => typeof url === "string" && /^https:\/\/mp\.weixin\.qq\.com\/s/.test(url))
+    );
+
+    return {
+      matchedAccount,
+      links,
+      message: links.length > 0
+        ? `已从公众号后台定位到 ${links.length} 篇历史文章。`
+        : "该时间范围没有命中任何历史文章。"
+    };
+  }
+
+  async function searchWechatMpAccounts(query, session) {
+    const payload = await fetchWechatMpJson(
+      "/cgi-bin/searchbiz",
+      {
+        action: "search_biz",
+        token: session.token,
+        lang: "zh_CN",
+        f: "json",
+        ajax: "1",
+        random: Math.random().toString(),
+        query,
+        begin: "0",
+        count: String(WECHAT_MP_SEARCH_COUNT)
+      },
+      session
+    );
+
+    return Array.isArray(payload.list)
+      ? payload.list
+        .map((item) => ({
+          fakeid: String(item.fakeid || "").trim(),
+          nickname: cleanupInline(item.nickname || ""),
+          alias: cleanupInline(item.alias || "")
+        }))
+        .filter((item) => item.fakeid)
+      : [];
+  }
+
+  async function resolveWechatMpAccountCandidate(candidates, seedMeta, session, logs) {
+    const targetName = normalizeSearchText(seedMeta.nickname);
+    const sorted = candidates
+      .slice()
+      .sort((left, right) => scoreWechatMpAccount(right, targetName) - scoreWechatMpAccount(left, targetName));
+
+    for (const candidate of sorted.slice(0, WECHAT_MP_CANDIDATE_LIMIT)) {
+      logs.push(`正在校验公众号候选：${formatWechatMpAccount(candidate)}。`);
+      const matched = await candidateContainsSeedArticle(candidate, seedMeta, session);
+      if (matched) {
+        return candidate;
+      }
+    }
+
+    if (sorted.length > 0) {
+      logs.push(`未找到与种子文章完全匹配的候选，回退到最接近的公众号：${formatWechatMpAccount(sorted[0])}。`);
+      return sorted[0];
+    }
+
+    return null;
+  }
+
+  async function candidateContainsSeedArticle(candidate, seedMeta, session) {
+    for (let begin = 0; begin < WECHAT_MP_SEED_SCAN_LIMIT; begin += WECHAT_MP_ARTICLE_PAGE_SIZE) {
+      const page = await fetchWechatMpArticlesPage(candidate.fakeid, session, begin);
+      if (page.articles.length === 0) {
+        return false;
+      }
+
+      for (const article of page.articles) {
+        if (isWechatSeedArticleMatch(article, seedMeta)) {
+          return true;
+        }
+      }
+
+      const oldestTimestamp = page.articles[page.articles.length - 1]?.publishTimestamp || 0;
+      if (seedMeta.publishTimestamp && oldestTimestamp && oldestTimestamp < seedMeta.publishTimestamp - (120 * 24 * 60 * 60)) {
+        return false;
+      }
+
+      if (page.articles.length < WECHAT_MP_ARTICLE_PAGE_SIZE) {
+        return false;
+      }
+
+      await sleep(WECHAT_MP_PAGE_DELAY_MS);
+    }
+
+    return false;
+  }
+
+  async function fetchWechatMpArticlesInRange(fakeid, session, startDate, endDate, logs) {
+    const startTimestamp = toWechatRangeStart(startDate);
+    const endTimestamp = toWechatRangeEnd(endDate);
+    const matches = [];
+
+    for (let begin = 0; begin < WECHAT_MP_HISTORY_SCAN_LIMIT; begin += WECHAT_MP_ARTICLE_PAGE_SIZE) {
+      const page = await fetchWechatMpArticlesPage(fakeid, session, begin);
+      if (page.articles.length === 0) {
+        break;
+      }
+
+      for (const article of page.articles) {
+        if (!article.publishTimestamp) {
+          continue;
+        }
+
+        if (article.publishTimestamp >= startTimestamp && article.publishTimestamp <= endTimestamp) {
+          matches.push(article);
+        }
+      }
+
+      const oldestTimestamp = page.articles[page.articles.length - 1]?.publishTimestamp || 0;
+      if (oldestTimestamp && oldestTimestamp < startTimestamp) {
+        break;
+      }
+
+      if (page.articles.length < WECHAT_MP_ARTICLE_PAGE_SIZE) {
+        break;
+      }
+
+      await sleep(WECHAT_MP_PAGE_DELAY_MS);
+    }
+
+    logs.push(`按日期范围筛选后命中 ${matches.length} 篇历史文章。`);
+    return matches;
+  }
+
+  async function fetchWechatMpArticlesPage(fakeid, session, begin) {
+    const payload = await fetchWechatMpJson(
+      "/cgi-bin/appmsg",
+      {
+        token: session.token,
+        lang: "zh_CN",
+        f: "json",
+        ajax: "1",
+        random: Math.random().toString(),
+        action: "list_ex",
+        begin: String(begin),
+        count: String(WECHAT_MP_ARTICLE_PAGE_SIZE),
+        query: "",
+        fakeid,
+        type: "9"
+      },
+      session
+    );
+
+    return {
+      total: safeNumber(payload.app_msg_cnt),
+      articles: parseWechatMpArticleList(payload)
+    };
+  }
+
+  async function fetchWechatMpJson(path, params, session) {
+    const url = new URL(path, WECHAT_MP_LOGIN_URL);
+    const searchParams = new URLSearchParams();
+
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value === undefined || value === null || value === "") {
+        continue;
+      }
+      searchParams.set(key, String(value));
+    }
+
+    url.search = searchParams.toString();
+
+    const response = await fetch(url.toString(), {
+      credentials: "include",
+      cache: "no-store",
+      referrer: session.homeUrl || WECHAT_MP_LOGIN_URL,
+      referrerPolicy: "strict-origin-when-cross-origin"
+    });
+
+    if (!response.ok) {
+      throw new Error(`公众号后台接口请求失败: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    assertWechatMpPayloadOkay(payload);
+    return payload;
+  }
+
+  function assertWechatMpPayloadOkay(payload) {
+    if (!payload || typeof payload !== "object") {
+      throw new Error("公众号后台返回了无效数据");
+    }
+
+    if (payload.base_resp?.ret && Number(payload.base_resp.ret) !== 0) {
+      throw new Error(payload.base_resp.err_msg || "公众号后台接口返回失败");
+    }
+
+    if (typeof payload.ret !== "undefined" && Number(payload.ret) !== 0) {
+      throw new Error(payload.msg || payload.errmsg || "公众号后台接口返回失败");
+    }
+
+    if (payload.errmsg && !/^(ok|success)$/i.test(String(payload.errmsg))) {
+      throw new Error(payload.errmsg);
+    }
+  }
+
+  function parseWechatMpArticleList(payload) {
+    if (Array.isArray(payload.app_msg_list)) {
+      return payload.app_msg_list
+        .map(parseWechatMpArticleItem)
+        .filter(Boolean);
+    }
+
+    return [];
+  }
+
+  function parseWechatMpArticleItem(item) {
+    const url = normalizeWechatArticleUrl(item?.link || item?.url || "");
+    const title = cleanupInline(item?.title || "");
+    const publishTimestamp = safeNumber(item?.update_time || item?.create_time);
+
+    if (!url || !title || !publishTimestamp) {
+      return null;
+    }
+
+    const identity = parseWechatArticleIdentityFromUrl(url);
+
+    return {
+      title,
+      url,
+      publishTimestamp,
+      articleKey: buildWechatArticleKey(identity),
+      articleId: buildWechatArticleId(identity)
+    };
+  }
+
+  function isWechatSeedArticleMatch(article, seedMeta) {
+    if (!article || !seedMeta) {
+      return false;
+    }
+
+    if (seedMeta.articleKey && article.articleKey && seedMeta.articleKey === article.articleKey) {
+      return true;
+    }
+
+    if (seedMeta.articleId && article.articleId && seedMeta.articleId === article.articleId) {
+      return true;
+    }
+
+    const sameTitle = normalizeSearchText(article.title) === normalizeSearchText(seedMeta.title);
+    if (!sameTitle) {
+      return false;
+    }
+
+    if (seedMeta.publishTimestamp && article.publishTimestamp) {
+      return Math.abs(article.publishTimestamp - seedMeta.publishTimestamp) <= (3 * 24 * 60 * 60);
+    }
+
+    return true;
+  }
+
+  function scoreWechatMpAccount(candidate, targetName) {
+    const nickname = normalizeSearchText(candidate.nickname);
+    const alias = normalizeSearchText(candidate.alias);
+
+    if (!targetName) {
+      return 0;
+    }
+
+    if (nickname === targetName || alias === targetName) {
+      return 100;
+    }
+
+    if (nickname.includes(targetName) || targetName.includes(nickname)) {
+      return 60;
+    }
+
+    if (alias.includes(targetName) || targetName.includes(alias)) {
+      return 40;
+    }
+
+    return 0;
+  }
+
+  function extractWechatMpToken(value) {
+    const match = String(value || "").match(/(?:^|[?&#])token=(\d+)/);
+    return match?.[1] || "";
+  }
+
+  function buildWechatMpHomeUrl(token) {
+    return `https://mp.weixin.qq.com/cgi-bin/home?t=home/index&lang=zh_CN&token=${encodeURIComponent(token)}`;
+  }
+
+  function extractWechatMpAccountName(html) {
+    const patterns = [
+      /nick_name['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+      /user_name['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+      /account_name['"]?\s*[:=]\s*['"]([^'"]+)['"]/
+    ];
+
+    for (const pattern of patterns) {
+      const match = String(html || "").match(pattern);
+      if (match?.[1]) {
+        return cleanupInline(match[1]);
+      }
+    }
+
+    return "";
+  }
+
+  function extractWechatArticleIdentity() {
+    const candidateUrls = [
+      location.href,
+      document.querySelector('meta[property="og:url"]')?.getAttribute("content") || ""
+    ];
+    const identity = {
+      biz: "",
+      mid: "",
+      idx: "",
+      sn: "",
+      publishTimestamp: extractWechatPublishTimestamp(),
+      canonicalUrl: "",
+      articleKey: "",
+      articleId: ""
+    };
+
+    for (const candidateUrl of candidateUrls) {
+      const parsed = parseWechatArticleIdentityFromUrl(candidateUrl);
+      if (parsed.biz || parsed.mid || parsed.idx || parsed.sn) {
+        Object.assign(identity, parsed);
+        break;
+      }
+    }
+
+    for (const script of Array.from(document.scripts)) {
+      const content = script.textContent || "";
+      identity.biz = identity.biz || extractScriptValue(content, /(?:var|let|const)\s+biz\s*=\s*["']([^"']+)["']/);
+      identity.mid = identity.mid || extractScriptValue(content, /(?:var|let|const)\s+mid\s*=\s*["']?(\d+)["']?/);
+      identity.idx = identity.idx || extractScriptValue(content, /(?:var|let|const)\s+idx\s*=\s*["']?(\d+)["']?/);
+      identity.sn = identity.sn || extractScriptValue(content, /(?:var|let|const)\s+sn\s*=\s*["']([^"']+)["']/);
+      if (!identity.publishTimestamp) {
+        identity.publishTimestamp = safeNumber(extractScriptValue(content, /(?:var|let|const)\s+ct\s*=\s*["']?(\d+)["']?/));
+      }
+    }
+
+    identity.canonicalUrl = buildCanonicalWechatArticleUrl(identity) || candidateUrls.find(Boolean) || location.href;
+    identity.articleKey = buildWechatArticleKey(identity);
+    identity.articleId = buildWechatArticleId(identity);
+    return identity;
+  }
+
+  function extractWechatPublishTimestamp() {
+    for (const script of Array.from(document.scripts)) {
+      const value = extractScriptValue(script.textContent || "", /(?:var|let|const)\s+ct\s*=\s*["']?(\d+)["']?/);
+      if (value) {
+        return safeNumber(value);
+      }
+    }
+
+    return 0;
+  }
+
+  function parseWechatArticleIdentityFromUrl(url) {
+    const normalized = normalizeWechatArticleUrl(url);
+    if (!normalized) {
+      return { biz: "", mid: "", idx: "", sn: "", canonicalUrl: "" };
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      return {
+        biz: parsed.searchParams.get("__biz") || "",
+        mid: parsed.searchParams.get("mid") || "",
+        idx: parsed.searchParams.get("idx") || "",
+        sn: parsed.searchParams.get("sn") || "",
+        canonicalUrl: normalized
+      };
+    } catch (error) {
+      return { biz: "", mid: "", idx: "", sn: "", canonicalUrl: normalized };
+    }
+  }
+
+  function buildCanonicalWechatArticleUrl(identity) {
+    if (!identity?.biz || !identity?.mid || !identity?.idx) {
+      return "";
+    }
+
+    const url = new URL("https://mp.weixin.qq.com/s");
+    url.searchParams.set("__biz", identity.biz);
+    url.searchParams.set("mid", identity.mid);
+    url.searchParams.set("idx", identity.idx);
+    if (identity.sn) {
+      url.searchParams.set("sn", identity.sn);
+    }
+    return url.toString();
+  }
+
+  function buildWechatArticleKey(identity) {
+    if (identity?.mid && identity?.idx) {
+      return `${identity.mid}:${identity.idx}`;
+    }
+    if (identity?.sn) {
+      return `sn:${identity.sn}`;
+    }
+    return "";
+  }
+
+  function buildWechatArticleId(identity) {
+    if (identity?.biz && identity?.mid && identity?.idx) {
+      return `${identity.biz}:${identity.mid}:${identity.idx}`;
+    }
+    return identity?.biz && identity?.sn ? `${identity.biz}:sn:${identity.sn}` : "";
+  }
+
+  function normalizeWechatArticleUrl(url) {
+    const raw = String(url || "").trim().replace(/&amp;/g, "&");
+    if (!raw) {
+      return "";
+    }
+
+    const absolute = toAbsoluteUrl(raw);
+    try {
+      const parsed = new URL(absolute);
+      if (parsed.hostname === "mp.weixin.qq.com" && parsed.protocol === "http:") {
+        parsed.protocol = "https:";
+      }
+      parsed.hash = "";
+      return parsed.toString();
+    } catch (error) {
+      return absolute;
+    }
+  }
+
+  function extractScriptValue(content, pattern) {
+    const match = String(content || "").match(pattern);
+    return match?.[1] || "";
+  }
+
+  function normalizeSearchText(value) {
+    return cleanupInline(String(value || "")).replace(/\s+/g, "").toLowerCase();
+  }
+
+  function formatWechatMpAccount(account) {
+    if (!account) {
+      return "未命名公众号";
+    }
+    return account.alias && account.alias !== account.nickname
+      ? `${account.nickname} (${account.alias})`
+      : (account.nickname || account.alias || "未命名公众号");
+  }
+
+  function safeNumber(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+
+  function toWechatRangeStart(value) {
+    const date = new Date(`${value}T00:00:00`);
+    return Number.isFinite(date.getTime()) ? Math.floor(date.getTime() / 1000) : 0;
+  }
+
+  function toWechatRangeEnd(value) {
+    const date = new Date(`${value}T23:59:59`);
+    return Number.isFinite(date.getTime()) ? Math.floor(date.getTime() / 1000) : 0;
+  }
+
+  function uniqueStrings(values) {
+    return Array.from(new Set((values || []).filter(Boolean)));
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function sanitizeWechatArticle(root, options) {
+    removeWechatNoise(root);
+    replaceWechatEmbeds(root);
+    await hydrateWechatImages(root, options);
+    cleanupEmptyWechatNodes(root);
+  }
+
+  function removeWechatNoise(root) {
+    for (const node of Array.from(root.querySelectorAll(WECHAT_REMOVE_SELECTOR))) {
+      node.remove();
+    }
+
+    for (const node of Array.from(root.querySelectorAll("[style]"))) {
+      const style = node.getAttribute("style") || "";
+      if (/display\s*:\s*none/i.test(style)) {
+        node.remove();
+      }
+    }
+  }
+
+  function replaceWechatEmbeds(root) {
+    for (const iframe of Array.from(root.querySelectorAll("iframe"))) {
+      const src = iframe.getAttribute("src") || iframe.getAttribute("data-src") || "";
+      if (!src) {
+        iframe.remove();
+        continue;
+      }
+
+      const link = document.createElement("a");
+      link.href = toAbsoluteUrl(src);
+      link.textContent = "视频/音频链接";
+      iframe.replaceWith(link);
+    }
+  }
+
+  async function hydrateWechatImages(root, options) {
+    const includeImages = options.includeImages !== false;
+    const images = Array.from(root.querySelectorAll("img"));
+
+    for (const image of images) {
+      const resolvedUrl = resolveWechatImageUrl(image);
+
+      if (!includeImages || !resolvedUrl) {
+        image.remove();
+        continue;
+      }
+
+      const embeddedUrl = await fetchExtensionAssetAsDataUrl(resolvedUrl);
+      image.setAttribute("src", embeddedUrl || resolvedUrl);
+      image.setAttribute("alt", buildWechatImageAlt(image));
+      image.removeAttribute("data-src");
+      image.removeAttribute("data-original");
+      image.removeAttribute("data-backsrc");
+      image.removeAttribute("data-actualsrc");
+      image.removeAttribute("srcset");
+      image.className = "";
+    }
+  }
+
+  function cleanupEmptyWechatNodes(root) {
+    const removableSelectors = ["p", "section", "div", "span"];
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+      const nodes = Array.from(root.querySelectorAll(removableSelectors.join(",")));
+      for (const node of nodes) {
+        const hasMedia = node.querySelector("img, video, audio, iframe, table, pre");
+        const text = cleanupInline(node.textContent || "");
+        if (!hasMedia && !text && node.children.length === 0) {
+          node.remove();
+          changed = true;
+        }
+      }
+    }
+  }
+
+  function resolveWechatImageUrl(image) {
+    const candidates = [
+      image.getAttribute("data-src"),
+      image.getAttribute("data-original"),
+      image.getAttribute("data-backsrc"),
+      image.getAttribute("data-actualsrc"),
+      image.currentSrc,
+      image.getAttribute("src")
+    ];
+
+    for (const candidate of candidates) {
+      const url = String(candidate || "").trim();
+      if (!url || url.startsWith("data:image/svg+xml")) {
+        continue;
+      }
+      return toAbsoluteUrl(url);
+    }
+
+    return "";
+  }
+
+  function buildWechatImageAlt(image) {
+    return cleanupInline(
+      image.getAttribute("data-caption")
+      || image.getAttribute("data-title")
+      || image.getAttribute("alt")
+      || "公众号图片"
+    ) || "公众号图片";
+  }
+
+  async function fetchExtensionAssetAsDataUrl(url) {
+    try {
+      const response = await sendRuntimeMessage({
+        type: MESSAGE_FETCH_ASSET,
+        url
+      });
+      return response?.dataUrl || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function sendRuntimeMessage(message) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        if (!response?.ok) {
+          reject(new Error(response?.error || "后台请求失败"));
+          return;
+        }
+
+        resolve(response);
+      });
+    });
+  }
+
+  function normalizeWechatTitle(value) {
+    return stripInvisibleText(String(value || ""))
+      .replace(/\s+/g, " ")
+      .replace(/\s+-\s+微信公众平台$/, "")
+      .trim();
+  }
+
+  async function convertClientVarsToMarkdown(meta, clientVars, options) {
+    const blockMap = clientVars?.data?.block_map || {};
+    const root = blockMap[meta.exportToken];
+    const rootChildren = root?.data?.children || [];
+
+    if (rootChildren.length === 0) {
+      throw new Error("未找到正文块数据");
+    }
+
+    const context = {
+      blockMap,
+      includeImages: options.includeImages !== false,
+      imageMap: options.includeImages === false ? new Map() : await buildEmbeddedImageMap(blockMap),
+      rootId: meta.exportToken,
+      pageTitle: meta.title
+    };
+
+    const body = renderBlockSequence(rootChildren, context, 0);
+    if (!body.trim()) {
+      throw new Error("正文块解析后为空");
+    }
+
+    return body;
+  }
+
+  function renderBlockSequence(blockIds, context, depth) {
+    const parts = [];
+
+    for (let index = 0; index < blockIds.length; index += 1) {
+      const blockId = blockIds[index];
+      const block = context.blockMap[blockId];
+      const type = block?.data?.type;
+
+      if (type === "bullet") {
+        const listItems = [];
+        while (index < blockIds.length) {
+          const currentId = blockIds[index];
+          const currentBlock = context.blockMap[currentId];
+          if (currentBlock?.data?.type !== "bullet") {
+            break;
+          }
+
+          const rendered = renderClientVarBlock(currentId, context, depth);
+          if (rendered) {
+            listItems.push(rendered);
+          }
+          index += 1;
+        }
+
+        index -= 1;
+        if (listItems.length > 0) {
+          parts.push(listItems.join("\n"));
+        }
+        continue;
+      }
+
+      const rendered = renderClientVarBlock(blockId, context, depth);
+      if (rendered) {
+        parts.push(rendered);
+      }
+    }
+
+    return cleanupMarkdown(parts.join("\n\n"));
+  }
+
+  function renderClientVarBlock(blockId, context, depth) {
+    const block = context.blockMap[blockId];
+    if (!block?.data || block.data.hidden) {
+      return "";
+    }
+
+    const type = block.data.type;
+    const text = getBlockText(block);
+
+    switch (type) {
+      case "text":
+        return text;
+      case "heading1":
+        return renderHeading(text, 2, context.pageTitle);
+      case "heading2":
+        return renderHeading(text, 3, context.pageTitle);
+      case "heading3":
+        return renderHeading(text, 4, context.pageTitle);
+      case "bullet":
+        return renderBulletBlock(block, context, depth);
+      case "image":
+        return renderImageBlock(blockId, block, context);
+      case "callout":
+        return renderQuotedChildren(block.data.children || [], context, depth);
+      case "quote_container":
+        return isCatalogueBlock(block, context) ? "" : renderQuotedChildren(block.data.children || [], context, depth);
+      default:
+        if (Array.isArray(block.data.children) && block.data.children.length > 0) {
+          return renderBlockSequence(block.data.children, context, depth + 1);
+        }
+        return text;
+    }
+  }
+
+  function renderHeading(text, level, pageTitle) {
+    const cleaned = cleanupMarkdown(text);
+    if (!cleaned || cleaned === cleanupMarkdown(pageTitle)) {
+      return "";
+    }
+
+    return `${"#".repeat(level)} ${cleaned}`;
+  }
+
+  function renderBulletBlock(block, context, depth) {
+    const head = cleanupMarkdown(getBlockText(block)) || " ";
+    const children = Array.isArray(block.data.children) && block.data.children.length > 0
+      ? renderBlockSequence(block.data.children, context, depth + 1)
+      : "";
+    const indent = "  ".repeat(depth);
+    const line = `${indent}- ${head}`;
+    return children ? `${line}\n${indent}  ${children.replace(/\n/g, `\n${indent}  `)}` : line;
+  }
+
+  function renderImageBlock(blockId, block, context) {
+    if (!context.includeImages) {
+      return "";
+    }
+
+    const src = context.imageMap.get(blockId) || buildImageUrl(blockId, block);
+    if (!src) {
+      return "";
+    }
+
+    const alt = normalizeInlineText(block.data.image?.name || "飞书文档图片");
+    return `![${alt}](${src})`;
+  }
+
+  function renderQuotedChildren(children, context, depth) {
+    const content = renderBlockSequence(children, context, depth + 1);
+    if (!content) {
+      return "";
+    }
+
+    return prefixLines(content, "> ");
+  }
+
+  function getBlockText(block) {
+    const textMap = block?.data?.text?.initialAttributedTexts?.text;
+    if (!textMap) {
+      return "";
+    }
+
+    return cleanupMarkdown(
+      Object.keys(textMap)
+        .sort((left, right) => Number(left) - Number(right))
+        .map((key) => textMap[key] || "")
+        .join("")
+    );
+  }
+
+  function extractImageMapFromDom() {
+    const imageMap = new Map();
+
+    for (const img of document.querySelectorAll(".docx-image-block img")) {
+      const wrapper = img.closest("[data-record-id]");
+      const blockId = wrapper?.getAttribute("data-record-id");
+      const src = img.currentSrc || img.getAttribute("src") || "";
+      if (blockId && src && !imageMap.has(blockId)) {
+        imageMap.set(blockId, src);
+      }
+    }
+
+    return imageMap;
+  }
+
+  async function buildEmbeddedImageMap(blockMap) {
+    const imageMap = extractImageMapFromDom();
+    const embeddedMap = new Map();
+    const imageBlocks = Object.entries(blockMap).filter(([, block]) => block?.data?.type === "image");
+
+    for (const [blockId, block] of imageBlocks) {
+      const src = imageMap.get(blockId) || buildImageUrl(blockId, block);
+      if (!src) {
+        continue;
+      }
+
+      const embeddedSrc = await fetchImageAsDataUrl(src);
+      embeddedMap.set(blockId, embeddedSrc || src);
+    }
+
+    return embeddedMap;
+  }
+
+  async function fetchImageAsDataUrl(src) {
+    try {
+      const response = await fetch(src, { credentials: "include" });
+      if (!response.ok) {
+        return "";
+      }
+
+      const blob = await response.blob();
+      return await blobToDataUrl(blob);
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("图片读取失败"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function buildImageUrl(blockId, block) {
+    const token = block?.data?.image?.token;
+    if (!token) {
+      return "";
+    }
+
+    return `https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/v2/cover/${encodeURIComponent(token)}/?fallback_source=1&mount_node_token=${encodeURIComponent(blockId)}&mount_point=docx_image`;
+  }
+
+  function isCatalogueBlock(block, context) {
+    const children = Array.isArray(block?.data?.children) ? block.data.children : [];
+    if (children.length < 3) {
+      return false;
+    }
+
+    return children.every((childId) => {
+      const child = context.blockMap[childId];
+      if (!child?.data || child.data.type !== "bullet") {
+        return false;
+      }
+
+      const attribPool = child.data.text?.apool?.numToAttrib || {};
+      return Object.values(attribPool).some((attrib) => {
+        return Array.isArray(attrib)
+          && attrib[0] === "link"
+          && decodeURIComponent(String(attrib[1] || "")).includes(`${location.pathname}#`);
+      });
+    });
+  }
+
+  function prefixLines(value, prefix) {
+    return value
+      .split("\n")
+      .map((line) => `${prefix}${line}`)
+      .join("\n");
+  }
+
+  function extractDocumentHtml() {
+    return getDocumentNodes().map((page) => serializeNode(page)).join("\n");
+  }
+
+  function extractDocumentMarkdown() {
+    const markdown = getDocumentNodes()
+      .map((node) => convertBlock(node, 0))
+      .filter(Boolean)
+      .join("\n\n");
+
+    return cleanupMarkdown(markdown);
+  }
+
+  function getDocumentNodes() {
+    const root = findExportRoot();
+    const rootBlock = root?.matches?.(".page-block.root-block") ? root : root?.querySelector?.(".page-block.root-block");
+    const scope = rootBlock || root;
+
+    if (!scope) {
+      return [document.body];
+    }
+
+    const children = Array.from(scope.children).filter((child) => !shouldSkipExportElement(child));
+    const bodyChildren = children.filter((child) => {
+      if (!(child instanceof Element)) {
+        return true;
+      }
+
+      return !child.classList.contains("page-block-header");
+    });
+
+    return bodyChildren.length > 0 ? bodyChildren : [scope];
+  }
+
+  function findExportRoot() {
+    const selectors = [
+      ".page-main-item.editor .page-block.root-block",
+      ".page-main-item.editor .editor-container",
+      ".page-main-item.editor",
+      ".page-main .page-main-item.editor",
+      ".page-main",
+      ".page-block.root-block"
+    ];
+
+    for (const selector of selectors) {
+      const candidates = Array.from(document.querySelectorAll(selector)).filter((node) => isVisible(node) && !shouldSkipExportElement(node));
+      const best = pickLargestNode(candidates);
+      if (best) {
+        return best;
+      }
+    }
+
+    const pages = Array.from(document.querySelectorAll("[data-page-id]"))
+      .filter((node) => isVisible(node) && !shouldSkipExportElement(node))
+      .slice(0, 200);
+
+    if (pages.length > 0) {
+      return pages[0];
+    }
+
+    return findBestRoot();
+  }
+
+  function findBestRoot() {
+    const selectors = [
+      "[role='main']",
+      "main",
+      "[class*='doc-content']",
+      "[class*='document-content']",
+      "[class*='page-content']",
+      "[class*='editor-content']",
+      "[class*='wiki-content']"
+    ];
+
+    for (const selector of selectors) {
+      const candidates = Array.from(document.querySelectorAll(selector)).filter((node) => isVisible(node));
+      const best = pickLargestNode(candidates);
+      if (best) {
+        return best;
+      }
+    }
+
+    return document.body;
+  }
+
+  function pickLargestNode(nodes) {
+    let best = null;
+    let bestScore = 0;
+
+    for (const node of nodes) {
+      const textLength = (node.innerText || "").trim().length;
+      const childScore = node.children.length * 20;
+      const score = textLength + childScore;
+      if (score > bestScore) {
+        best = node;
+        bestScore = score;
+      }
+    }
+
+    return best;
+  }
+
+  function serializeNode(node) {
+    if (!node) {
+      return "";
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeHtml(node.textContent || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const tagName = node.tagName.toLowerCase();
+    if (shouldSkipNode(node, tagName) || shouldSkipExportElement(node)) {
+      return "";
+    }
+
+    if (tagName === "img") {
+      return serializeImage(node);
+    }
+
+    const computedStyle = window.getComputedStyle(node);
+    const inlineStyle = buildInlineStyle(computedStyle);
+    const attributes = [];
+
+    for (const name of ATTRIBUTE_WHITELIST) {
+      if (!node.hasAttribute(name)) {
+        continue;
+      }
+
+      let value = node.getAttribute(name) || "";
+      if (name === "href") {
+        value = toAbsoluteUrl(value);
+      } else if (name === "src") {
+        value = toAbsoluteUrl(value);
+      }
+
+      attributes.push(`${name}="${escapeAttribute(value)}"`);
+    }
+
+    if (inlineStyle) {
+      attributes.push(`style="${escapeAttribute(inlineStyle)}"`);
+    }
+
+    if (tagName === "a") {
+      attributes.push('target="_blank"');
+      attributes.push('rel="noreferrer noopener"');
+    }
+
+    const childHtml = Array.from(node.childNodes).map((child) => serializeNode(child)).join("");
+    return `<${tagName}${attributes.length ? ` ${attributes.join(" ")}` : ""}>${childHtml}</${tagName}>`;
+  }
+
+  function serializeImage(node) {
+    const src = node.currentSrc || node.getAttribute("src") || node.getAttribute("data-src") || "";
+    if (!src) {
+      return "";
+    }
+
+    const computedStyle = window.getComputedStyle(node);
+    const inlineStyle = buildInlineStyle(computedStyle);
+    const attributes = [
+      `src="${escapeAttribute(toAbsoluteUrl(src))}"`,
+      `alt="${escapeAttribute(node.getAttribute("alt") || "")}"`
+    ];
+
+    if (inlineStyle) {
+      attributes.push(`style="${escapeAttribute(inlineStyle)}"`);
+    }
+
+    return `<img ${attributes.join(" ")} />`;
+  }
+
+  function shouldSkipNode(node, tagName) {
+    if (!isVisible(node)) {
+      return true;
+    }
+
+    return [
+      "script",
+      "style",
+      "noscript",
+      "textarea",
+      "input",
+      "button",
+      "canvas",
+      "iframe"
+    ].includes(tagName);
+  }
+
+  function shouldSkipExportElement(node) {
+    if (!(node instanceof Element)) {
+      return false;
+    }
+
+    if (node.matches?.(EXPORT_SKIP_SELECTOR)) {
+      return true;
+    }
+
+    const identity = `${node.id || ""} ${typeof node.className === "string" ? node.className : ""}`;
+    if (/catalogue|comment|suggestion|rangecode|toolbar/i.test(identity)) {
+      return true;
+    }
+
+    const text = stripInvisibleText(node.textContent || "").trim();
+    if (text === "评论（0）" || text === "分享") {
+      return true;
+    }
+
+    return false;
+  }
+
+  function isVisible(node) {
+    if (!(node instanceof Element)) {
+      return true;
+    }
+
+    const style = window.getComputedStyle(node);
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+  }
+
+  function buildInlineStyle(style) {
+    const declarations = [];
+
+    for (const property of STYLE_WHITELIST) {
+      const value = style.getPropertyValue(property);
+      if (!value) {
+        continue;
+      }
+
+      if (shouldSkipStyle(property, value)) {
+        continue;
+      }
+
+      declarations.push(`${property}:${value}`);
+    }
+
+    return declarations.join(";");
+  }
+
+  function shouldSkipStyle(property, value) {
+    if (value === "none" && !property.startsWith("text-decoration")) {
+      return true;
+    }
+
+    if (value === "normal" && ["font-style", "font-weight", "letter-spacing"].includes(property)) {
+      return true;
+    }
+
+    if (value === "rgba(0, 0, 0, 0)" || value === "transparent") {
+      return true;
+    }
+
+    return false;
+  }
+
+  function buildStandaloneHtml(meta, articleHtml) {
+    return [
+      "<!DOCTYPE html>",
+      '<html lang="zh-CN">',
+      "<head>",
+      '  <meta charset="UTF-8">',
+      '  <meta name="viewport" content="width=device-width, initial-scale=1.0">',
+      `  <title>${escapeHtml(meta.title)}</title>`,
+      "  <style>",
+      "    :root { color-scheme: light; }",
+      "    body { margin: 0; background: #f4efe6; color: #1f1f1f; font-family: 'PingFang SC', 'Noto Sans SC', sans-serif; }",
+      "    .shell { max-width: 1080px; margin: 0 auto; padding: 40px 20px 72px; }",
+      "    .card { background: #fffdf9; border: 1px solid rgba(70, 45, 14, 0.08); border-radius: 24px; box-shadow: 0 18px 40px rgba(97, 67, 24, 0.08); overflow: hidden; }",
+      "    .head { padding: 28px 32px 18px; background: linear-gradient(180deg, #fff4dd 0%, #fffaf3 100%); border-bottom: 1px solid rgba(70, 45, 14, 0.08); }",
+      "    .eyebrow { margin: 0; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #8d5e1f; }",
+      "    h1 { margin: 6px 0 10px; font-size: 30px; line-height: 1.2; }",
+      "    .meta { margin: 0; color: #6b6256; font-size: 13px; line-height: 1.6; }",
+      "    .content { padding: 28px 32px 40px; overflow-wrap: anywhere; }",
+      "    img { max-width: 100%; height: auto; }",
+      "    table { border-collapse: collapse; width: 100%; }",
+      "    pre { white-space: pre-wrap; overflow-wrap: anywhere; }",
+      "    a { color: #0f5ac6; }",
+      "  </style>",
+      "</head>",
+      "<body>",
+      '  <div class="shell">',
+      '    <article class="card">',
+      '      <header class="head">',
+      '        <p class="eyebrow">Feishu Export MVP</p>',
+      `        <h1>${escapeHtml(meta.title)}</h1>`,
+      `        <p class="meta">页面类型: ${escapeHtml(meta.pageType)} | 导出时间: ${escapeHtml(new Date().toLocaleString())}</p>`,
+      `        <p class="meta">来源: <a href="${escapeAttribute(location.href)}" target="_blank" rel="noreferrer noopener">${escapeHtml(location.href)}</a></p>`,
+      "      </header>",
+      `      <section class="content">${articleHtml}</section>`,
+      "    </article>",
+      "  </div>",
+      "</body>",
+      "</html>"
+    ].join("\n");
+  }
+
+  function buildMarkdownDocument(meta, body) {
+    const parts = [
+      `# ${meta.title}`,
+      "",
+      `- 页面类型: ${meta.pageType}`,
+      `- 来源: ${location.href}`,
+      meta.author ? `- 作者: ${meta.author}` : "",
+      meta.publishTime ? `- 发布时间: ${meta.publishTime}` : "",
+      `- 导出时间: ${new Date().toLocaleString()}`,
+      "",
+      "---",
+      "",
+      body || "_未提取到正文内容_"
+    ];
+
+    return cleanupMarkdown(parts.join("\n"));
+  }
+
+  function buildFilename(title, extension) {
+    const safeTitle = sanitizeFilename(title || "local-document");
+    return `${safeTitle}.${extension}`;
+  }
+
+  function sanitizeFilename(value) {
+    const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+    let normalized = value
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[. ]+$/g, "")
+      .slice(0, 120);
+
+    if (!normalized) {
+      normalized = "local-document";
+    }
+
+    if (reserved.test(normalized)) {
+      normalized = `file-${normalized}`;
+    }
+
+    return normalized;
+  }
+
+  function normalizeTitle(value) {
+    return stripInvisibleText(String(value || ""))
+      .replace(/\s+-\s+飞书.*/, "")
+      .replace(/\s+-\s+Lark.*/, "")
+      .trim() || "未命名文档";
+  }
+
+  function extractVisibleTitle() {
+    const selectors = [
+      ".page-block-header h1",
+      "h1.page-block-content",
+      ".page-main-item.editor h1",
+      "h1",
+      "[role='heading'][aria-level='1']"
+    ];
+
+    for (const selector of selectors) {
+      const node = Array.from(document.querySelectorAll(selector)).find((element) => {
+        const text = stripInvisibleText(element.textContent || "").trim();
+        return isVisible(element) && text.length > 0;
+      });
+
+      if (node) {
+        return normalizeTitle(node.textContent || "");
+      }
+    }
+
+    return "";
+  }
+
+  function toAbsoluteUrl(url) {
+    try {
+      return new URL(url, location.href).href;
+    } catch (error) {
+      return url;
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function escapeAttribute(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function convertBlock(node, depth) {
+    if (!node) {
+      return "";
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      return normalizeInlineText(node.textContent || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE || !isVisible(node) || shouldSkipExportElement(node)) {
+      return "";
+    }
+
+    const tagName = node.tagName.toLowerCase();
+
+    if (["script", "style", "noscript", "textarea", "input", "button", "canvas", "iframe"].includes(tagName)) {
+      return "";
+    }
+
+    if (tagName === "img") {
+      return imageToMarkdown(node);
+    }
+
+    if (tagName === "br") {
+      return "\n";
+    }
+
+    if (tagName === "hr") {
+      return "---";
+    }
+
+    if (tagName === "pre") {
+      return codeBlockToMarkdown(node);
+    }
+
+    if (tagName === "table") {
+      return tableToMarkdown(node);
+    }
+
+    if (tagName === "ul" || tagName === "ol") {
+      return listToMarkdown(node, depth);
+    }
+
+    if (tagName === "blockquote") {
+      const content = cleanupMarkdown(Array.from(node.childNodes).map((child) => convertBlock(child, depth + 1)).join("\n"));
+      return content
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+    }
+
+    const headingLevel = getHeadingLevel(node);
+    if (headingLevel) {
+      const content = cleanupMarkdown(convertInlineChildren(node));
+      if (!content || content === normalizeTitle(extractVisibleTitle())) {
+        return "";
+      }
+      return `${"#".repeat(headingLevel)} ${content}`;
+    }
+
+    if (tagName === "li") {
+      return listItemToMarkdown(node, depth, false, 0);
+    }
+
+    if (isBlockNode(tagName)) {
+      const childBlocks = Array.from(node.childNodes)
+        .map((child) => convertBlock(child, depth))
+        .filter(Boolean);
+
+      if (childBlocks.length > 0 && hasMeaningfulBlockChildren(node)) {
+        return cleanupMarkdown(childBlocks.join("\n\n"));
+      }
+
+      const paragraph = cleanupMarkdown(convertInlineChildren(node));
+      return paragraph;
+    }
+
+    return convertInline(node);
+  }
+
+  function convertInline(node) {
+    if (!node) {
+      return "";
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      return normalizeInlineText(node.textContent || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE || !isVisible(node) || shouldSkipExportElement(node)) {
+      return "";
+    }
+
+    const tagName = node.tagName.toLowerCase();
+
+    if (tagName === "br") {
+      return "  \n";
+    }
+
+    if (tagName === "img") {
+      return imageToMarkdown(node);
+    }
+
+    if (tagName === "a") {
+      const text = cleanupMarkdown(convertInlineChildren(node)) || normalizeInlineText(node.textContent || "");
+      const href = toAbsoluteUrl(node.getAttribute("href") || "");
+      return href ? `[${text || href}](${href})` : text;
+    }
+
+    if (tagName === "code" && node.parentElement?.tagName.toLowerCase() !== "pre") {
+      const content = normalizeInlineText(node.textContent || "");
+      return content ? `\`${content}\`` : "";
+    }
+
+    const content = convertInlineChildren(node);
+    if (!content) {
+      return "";
+    }
+
+    if (["strong", "b"].includes(tagName)) {
+      return `**${content}**`;
+    }
+
+    if (["em", "i"].includes(tagName)) {
+      return `*${content}*`;
+    }
+
+    if (tagName === "s" || tagName === "del") {
+      return `~~${content}~~`;
+    }
+
+    return content;
+  }
+
+  function convertInlineChildren(node) {
+    return cleanupInline(
+      Array.from(node.childNodes)
+        .map((child) => convertInline(child))
+        .join("")
+    );
+  }
+
+  function listToMarkdown(listNode, depth) {
+    const ordered = listNode.tagName.toLowerCase() === "ol";
+    const items = Array.from(listNode.children).filter((child) => child.tagName?.toLowerCase() === "li");
+
+    return items
+      .map((item, index) => listItemToMarkdown(item, depth, ordered, index))
+      .join("\n");
+  }
+
+  function listItemToMarkdown(item, depth, ordered, index) {
+    const indent = "  ".repeat(depth);
+    const marker = ordered ? `${index + 1}. ` : "- ";
+    const inlineParts = [];
+    const nestedLists = [];
+
+    for (const child of Array.from(item.childNodes)) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        const childTag = child.tagName.toLowerCase();
+        if (childTag === "ul" || childTag === "ol") {
+          nestedLists.push(child);
+          continue;
+        }
+      }
+
+      inlineParts.push(convertInline(child));
+    }
+
+    const head = cleanupInline(inlineParts.join("")) || " ";
+    const tail = nestedLists
+      .map((list) => listToMarkdown(list, depth + 1))
+      .filter(Boolean)
+      .join("\n");
+
+    return `${indent}${marker}${head}${tail ? `\n${tail}` : ""}`;
+  }
+
+  function codeBlockToMarkdown(node) {
+    const content = (node.textContent || "").replace(/\n+$/, "");
+    return `\`\`\`\n${content}\n\`\`\``;
+  }
+
+  function imageToMarkdown(node) {
+    const src = node.currentSrc || node.getAttribute("src") || node.getAttribute("data-src") || "";
+    if (!src) {
+      return "";
+    }
+
+    const alt = normalizeInlineText(node.getAttribute("alt") || "");
+    return `![${alt}](${toAbsoluteUrl(src)})`;
+  }
+
+  function tableToMarkdown(table) {
+    const rows = Array.from(table.querySelectorAll("tr"))
+      .map((row) => Array.from(row.children).map((cell) => cleanupInline(convertInlineChildren(cell))))
+      .filter((row) => row.length > 0);
+
+    if (rows.length === 0) {
+      return "";
+    }
+
+    const columnCount = Math.max(...rows.map((row) => row.length));
+    const normalizedRows = rows.map((row) => {
+      const copy = row.slice();
+      while (copy.length < columnCount) {
+        copy.push("");
+      }
+      return copy;
+    });
+
+    const header = normalizedRows[0];
+    const separator = new Array(columnCount).fill("---");
+    const body = normalizedRows.slice(1);
+    const lines = [
+      `| ${header.join(" | ")} |`,
+      `| ${separator.join(" | ")} |`
+    ];
+
+    for (const row of body) {
+      lines.push(`| ${row.join(" | ")} |`);
+    }
+
+    return lines.join("\n");
+  }
+
+  function getHeadingLevel(node) {
+    const tagName = node.tagName.toLowerCase();
+    if (/^h[1-6]$/.test(tagName)) {
+      return Number(tagName[1]);
+    }
+
+    const ariaLevel = node.getAttribute("aria-level");
+    if (node.getAttribute("role") === "heading" && ariaLevel) {
+      return Math.min(Math.max(Number(ariaLevel) || 1, 1), 6);
+    }
+
+    const style = window.getComputedStyle(node);
+    const fontSize = Number.parseFloat(style.fontSize || "0");
+    const fontWeight = Number.parseInt(style.fontWeight || "400", 10);
+
+    if (fontWeight >= 600 && fontSize >= 28) {
+      return 1;
+    }
+
+    if (fontWeight >= 600 && fontSize >= 22) {
+      return 2;
+    }
+
+    if (fontWeight >= 600 && fontSize >= 18) {
+      return 3;
+    }
+
+    return 0;
+  }
+
+  function isBlockNode(tagName) {
+    return [
+      "article",
+      "section",
+      "main",
+      "div",
+      "p",
+      "header",
+      "footer",
+      "aside",
+      "figure",
+      "figcaption"
+    ].includes(tagName);
+  }
+
+  function hasMeaningfulBlockChildren(node) {
+    return Array.from(node.children).some((child) => {
+      const tagName = child.tagName.toLowerCase();
+      return ["div", "p", "section", "article", "ul", "ol", "table", "pre", "blockquote"].includes(tagName);
+    });
+  }
+
+  function cleanupInline(value) {
+    return stripInvisibleText(value).replace(/[ \t]+\n/g, "\n").replace(/\s{2,}/g, " ").trim();
+  }
+
+  function cleanupMarkdown(value) {
+    return stripInvisibleText(value)
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function normalizeInlineText(value) {
+    return stripInvisibleText(String(value || "").replace(/\s+/g, " "));
+  }
+
+  function stripInvisibleText(value) {
+    return String(value || "")
+      .replace(INVISIBLE_TEXT_RE, "")
+      .replace(/\u00A0/g, " ");
+  }
+
+  function stripMarkdownImages(value) {
+    return cleanupMarkdown(
+      String(value || "")
+        .replace(/!\[[^\]]*]\([^)]+\)/g, "")
+        .replace(/<img\b[^>]*>/gi, "")
+    );
+  }
+})();

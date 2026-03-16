@@ -1,0 +1,30 @@
+# Local VCS metadata
+.git/
+
+# Old bundled artifacts / legacy files not part of the current MVP
+assets/
+chunks/
+batch.html
+cache.html
+copy.html
+offscreen.html
+code.js
+config.json
+doc88.js
+fs.js
+inject.js
+qqdoc.js
+ui.js
+uploader.js
+content-scripts/content.css
+content-scripts/content.js
+content-scripts/crak.js
+content-scripts/top.js
+
+# Python cache
+__pycache__/
+*.pyc
+helper/data/
+
+# OS
+.DS_Store

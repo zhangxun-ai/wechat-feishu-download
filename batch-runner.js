@@ -1,0 +1,722 @@
+const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
+const INTER_TASK_DELAY_MS = 1200;
+const MAX_RETRIES = 2;
+const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
+
+const titleEl = document.getElementById("jobTitle");
+const metaEl = document.getElementById("jobMeta");
+const statusEl = document.getElementById("jobStatus");
+const progressEl = document.getElementById("jobProgress");
+const successEl = document.getElementById("jobSuccess");
+const failureEl = document.getElementById("jobFailure");
+const logEl = document.getElementById("jobLog");
+let wechatDirectFetchEnabled = true;
+
+init().catch((error) => {
+  setStatus(error.message || "任务初始化失败", "error");
+  appendLog(error.message || "任务初始化失败", "error");
+});
+
+async function init() {
+  const jobId = new URL(location.href).searchParams.get("jobId");
+  if (!jobId) {
+    throw new Error("缺少任务 ID");
+  }
+
+  const job = await loadJob(jobId);
+  if (!job) {
+    throw new Error("任务不存在或已失效");
+  }
+
+  titleEl.textContent = job.title || "批量下载任务";
+  metaEl.textContent = buildMeta(job);
+  setStatus(`任务已加载，共 ${job.links.length} 篇，开始下载。`, "loading");
+  updateStats(0, 0, 0, job.links.length);
+
+  const zipOutput = job.zipOutput !== false;
+  const zipBuilder = zipOutput ? new SimpleZipBuilder() : null;
+  const usedNames = new Set();
+  const exportedEntries = [];
+  const failedEntries = [];
+
+  let successCount = 0;
+  let failureCount = 0;
+
+  try {
+    for (let index = 0; index < job.links.length; index += 1) {
+      const link = job.links[index];
+      updateStats(index, successCount, failureCount, job.links.length);
+      setStatus(`正在处理 ${index + 1}/${job.links.length}`, "loading");
+      appendLog(`开始处理 ${index + 1}/${job.links.length}: ${link}`);
+
+      try {
+        const result = await exportLinkWithRetry(link, {
+          format: "markdown",
+          includeImages: job.includeImages !== false
+        });
+
+        if (zipBuilder) {
+          const entryName = uniquifyZipEntryName(result.filename, usedNames);
+          zipBuilder.addText(entryName, result.content);
+          exportedEntries.push({
+            url: link,
+            filename: entryName
+          });
+          appendLog(`已加入 ZIP: ${entryName}`, "success");
+        } else {
+          await downloadExportResult(result);
+          exportedEntries.push({
+            url: link,
+            filename: result.filename
+          });
+          appendLog(`已下载: ${result.filename}`, "success");
+        }
+
+        successCount += 1;
+      } catch (error) {
+        failureCount += 1;
+        failedEntries.push({
+          url: link,
+          message: error.message || "未知错误"
+        });
+        appendLog(`失败: ${link} | ${error.message || "未知错误"}`, "error");
+      }
+
+      await sleep(INTER_TASK_DELAY_MS);
+    }
+
+    if (zipBuilder && successCount > 0) {
+      setStatus(`正在打包 ZIP，共 ${successCount} 篇。`, "loading");
+      const manifestContent = JSON.stringify(
+        {
+          title: job.title,
+          source: job.source,
+          includeImages: job.includeImages !== false,
+          zipOutput: true,
+          account: job.account || null,
+          dateRange: job.dateRange || null,
+          successCount,
+          failureCount,
+          exportedEntries,
+          failedEntries,
+          createdAt: job.createdAt,
+          exportedAt: new Date().toISOString()
+        },
+        null,
+        2
+      );
+      zipBuilder.addText("manifest.json", manifestContent);
+      zipBuilder.addText(
+        "articles.txt",
+        exportedEntries.length > 0
+          ? exportedEntries.map((entry) => `${entry.filename}\t${entry.url}`).join("\n")
+          : "本次没有成功导出的文章。"
+      );
+      if (failedEntries.length > 0) {
+        zipBuilder.addText(
+          "failed.txt",
+          failedEntries.map((entry) => `${entry.url}\t${entry.message}`).join("\n")
+        );
+      }
+      const zipBlob = zipBuilder.buildBlob();
+      const zipUrl = URL.createObjectURL(zipBlob);
+      const zipFilename = buildZipFilename(job.title || "批量下载任务");
+
+      try {
+        await downloadFile({
+          url: zipUrl,
+          filename: zipFilename,
+          saveAs: false,
+          conflictAction: "uniquify"
+        });
+        appendLog(`ZIP 已生成: ${zipFilename}`, "success");
+      } finally {
+        setTimeout(() => URL.revokeObjectURL(zipUrl), 1000);
+      }
+    }
+
+    updateStats(job.links.length, successCount, failureCount, job.links.length);
+
+    if (failureCount === 0) {
+      setStatus(zipOutput ? `下载完成，并已打包 ZIP，共 ${successCount} 篇。` : `下载完成，共 ${successCount} 篇。`, "ready");
+    } else if (successCount > 0) {
+      setStatus(`下载完成，成功 ${successCount} 篇，失败 ${failureCount} 篇。`, "error");
+    } else {
+      setStatus(`下载失败，共 ${failureCount} 篇。`, "error");
+    }
+  } finally {
+    await removeJob(jobId);
+  }
+}
+
+async function exportLinkWithRetry(url, options) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        appendLog(`重试 ${attempt}/${MAX_RETRIES}: ${url}`);
+      }
+      return await exportLink(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_RETRIES) {
+        break;
+      }
+      const delay = (attempt + 1) * 1500;
+      appendLog(`本次失败，将在 ${delay}ms 后重试。`, "error");
+      await sleep(delay);
+    }
+  }
+
+  throw lastError || new Error("导出失败");
+}
+
+async function exportLink(url, options) {
+  if (options.format === "markdown" && isWechatArticleUrl(url) && wechatDirectFetchEnabled) {
+    try {
+      const result = await exportWechatArticleByHtmlFetch(url, options);
+      appendLog(`公众号文章已走 HTML 直抓: ${url}`);
+      return result;
+    } catch (error) {
+      if (error?.code === "WECHAT_VERIFY_PAGE") {
+        wechatDirectFetchEnabled = false;
+        appendLog("检测到微信对 HTML 直抓返回验证页，当前批次剩余公众号文章将自动改走稳定页面模式。");
+      } else {
+        appendLog(`公众号 HTML 直抓失败，已回退页面模式: ${error.message || "未知错误"}`);
+      }
+    }
+  }
+
+  return exportLinkInBackground(url, options);
+}
+
+async function exportLinkInBackground(url, options) {
+  const tabId = await createTab(url, false);
+
+  try {
+    await waitForTabReady(tabId, url);
+    await sleep(BACKGROUND_TAB_SETTLE_DELAY_MS);
+
+    const payload = await sendMessageWithRecovery(tabId, {
+      type: "feishu-export:export-document",
+      format: options.format,
+      options: {
+        includeImages: options.includeImages
+      }
+    });
+
+    return {
+      filename: normalizeDownloadFilename(payload.filename, options.format),
+      mimeType: payload.mimeType,
+      content: payload.content
+    };
+  } finally {
+    await closeTab(tabId);
+  }
+}
+
+async function exportWechatArticleByHtmlFetch(url, options) {
+  if (!globalThis.WechatDirectExport?.exportMarkdownFromHtml) {
+    throw new Error("公众号 HTML 导出模块未加载");
+  }
+
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+    redirect: "follow"
+  });
+
+  if (!response.ok) {
+    throw new Error(`抓取公众号 HTML 失败: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const finalUrl = normalizeWechatUrl(response.url || url);
+  return globalThis.WechatDirectExport.exportMarkdownFromHtml({
+    html,
+    sourceUrl: url,
+    finalUrl,
+    includeImages: options.includeImages !== false,
+    fetchAssetAsDataUrl: fetchAssetAsDataUrlFromBackground
+  });
+}
+
+async function downloadExportResult(result) {
+  const blob = new Blob([result.content], { type: result.mimeType });
+  const objectUrl = URL.createObjectURL(blob);
+
+  try {
+    await downloadWithFallback(objectUrl, result.filename, "markdown");
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+}
+
+function sendMessageToTab(tabId, message) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      if (!response) {
+        reject(new Error("页面没有返回数据"));
+        return;
+      }
+
+      if (!response.ok) {
+        reject(new Error(response.error || "请求失败"));
+        return;
+      }
+
+      resolve(response.data);
+    });
+  });
+}
+
+async function sendMessageWithRecovery(tabId, message) {
+  try {
+    return await sendMessageToTab(tabId, message);
+  } catch (error) {
+    if (!String(error?.message || "").includes("Receiving end does not exist")) {
+      throw error;
+    }
+
+    await injectContentScript(tabId);
+    return sendMessageToTab(tabId, message);
+  }
+}
+
+function injectContentScript(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript(
+      {
+        target: { tabId },
+        files: ["content-scripts/feishu-exporter.js"]
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve();
+      }
+    );
+  });
+}
+
+function createTab(url, active) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create({ url, active }, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!tab?.id) {
+        reject(new Error("任务标签页创建失败"));
+        return;
+      }
+      resolve(tab.id);
+    });
+  });
+}
+
+function waitForTabReady(tabId, sourceUrl, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+      chrome.tabs.onUpdated.removeListener(listener);
+    };
+
+    const timeoutId = setTimeout(() => {
+      cleanup();
+      reject(new Error("页面加载超时"));
+    }, timeoutMs);
+
+    const inspectTab = () => {
+      chrome.tabs.get(tabId, (tab) => {
+        if (chrome.runtime.lastError) {
+          cleanup();
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (isTabReadyForExport(tab, sourceUrl)) {
+          cleanup();
+          resolve();
+        }
+      });
+    };
+
+    const listener = (updatedTabId) => {
+      if (updatedTabId !== tabId) {
+        return;
+      }
+      inspectTab();
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+    inspectTab();
+  });
+}
+
+function isTabReadyForExport(tab, sourceUrl) {
+  const currentUrl = String(tab?.url || "");
+  if (!currentUrl || currentUrl === "about:blank") {
+    return false;
+  }
+  if (tab?.status !== "complete") {
+    return false;
+  }
+  if (currentUrl === sourceUrl) {
+    return true;
+  }
+  return isSupportedExportUrl(currentUrl);
+}
+
+function isSupportedExportUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const isFeishuPage = /(^|\.)((feishu\.cn)|(larksuite\.com)|(larkoffice\.com))$/.test(parsed.hostname)
+      && /^\/(docx|wiki)\//.test(parsed.pathname);
+    const isWechatPage = parsed.hostname === "mp.weixin.qq.com" && /^\/s(?:$|\/)/.test(parsed.pathname);
+    return isFeishuPage || isWechatPage;
+  } catch (error) {
+    return false;
+  }
+}
+
+function closeTab(tabId) {
+  return new Promise((resolve) => {
+    chrome.tabs.remove(tabId, () => resolve());
+  });
+}
+
+function isWechatArticleUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "mp.weixin.qq.com" && /^\/s(?:$|\/)/.test(parsed.pathname);
+  } catch (error) {
+    return false;
+  }
+}
+
+function normalizeWechatUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === "mp.weixin.qq.com" && parsed.protocol === "http:") {
+      parsed.protocol = "https:";
+    }
+    parsed.hash = "";
+    return parsed.toString();
+  } catch (error) {
+    return String(url || "");
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function downloadFile(options) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download(options, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(downloadId);
+    });
+  });
+}
+
+async function downloadWithFallback(url, filename, format) {
+  try {
+    return await downloadFile({
+      url,
+      filename,
+      saveAs: false,
+      conflictAction: "uniquify"
+    });
+  } catch (error) {
+    if (!String(error?.message || "").toLowerCase().includes("invalid filename")) {
+      throw error;
+    }
+    return downloadFile({
+      url,
+      filename: buildFallbackFilename(format),
+      saveAs: false,
+      conflictAction: "uniquify"
+    });
+  }
+}
+
+function normalizeDownloadFilename(filename, format) {
+  const extension = format === "json" ? "json" : "md";
+  const raw = String(filename || "");
+  const withoutExtension = raw.replace(/\.[^.]+$/, "");
+  const cleaned = withoutExtension
+    .replace(/[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]/g, "_")
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "")
+    .slice(0, 80);
+
+  if (!cleaned) {
+    return buildFallbackFilename(format);
+  }
+
+  return `${cleaned}.${extension}`;
+}
+
+function buildFallbackFilename(format) {
+  const extension = format === "json" ? "json" : "md";
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    "-",
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0")
+  ].join("");
+  return `local-export-${timestamp}.${extension}`;
+}
+
+function buildZipFilename(title) {
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    "-",
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0")
+  ].join("");
+  const base = String(title || "batch-export")
+    .replace(/[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "")
+    .slice(0, 60) || "batch-export";
+  return `${base}-${timestamp}.zip`;
+}
+
+function loadJob(jobId) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get([`batchJob:${jobId}`], (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(result[`batchJob:${jobId}`] || null);
+    });
+  });
+}
+
+function removeJob(jobId) {
+  return new Promise((resolve) => {
+    chrome.storage.local.remove([`batchJob:${jobId}`], () => resolve());
+  });
+}
+
+function buildMeta(job) {
+  const pieces = [`共 ${job.links.length} 篇`];
+  if (job.source === "wechat-history" && job.account?.nickname) {
+    pieces.push(`公众号 ${job.account.nickname}`);
+  }
+  if (job.dateRange?.startDate && job.dateRange?.endDate) {
+    pieces.push(`${job.dateRange.startDate} ~ ${job.dateRange.endDate}`);
+  }
+  pieces.push(job.includeImages === false ? "不带图" : "带图");
+  pieces.push(job.zipOutput === false ? "逐篇下载" : "ZIP 打包");
+  pieces.push("串行稳态模式");
+  pieces.push("公众号直抓优先");
+  return pieces.join(" | ");
+}
+
+function updateStats(doneCount, successCount, failureCount, totalCount) {
+  progressEl.textContent = `${doneCount} / ${totalCount}`;
+  successEl.textContent = String(successCount);
+  failureEl.textContent = String(failureCount);
+}
+
+async function fetchAssetAsDataUrlFromBackground(url) {
+  const response = await sendRuntimeMessage({
+    type: MESSAGE_FETCH_ASSET,
+    url
+  });
+  return response?.dataUrl || "";
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      if (!response?.ok) {
+        reject(new Error(response?.error || "后台请求失败"));
+        return;
+      }
+
+      resolve(response);
+    });
+  });
+}
+
+function setStatus(message, variant) {
+  statusEl.textContent = message;
+  statusEl.className = `status status-${variant}`;
+}
+
+function appendLog(message, variant = "") {
+  const entry = document.createElement("div");
+  entry.className = `log-entry${variant ? ` log-entry-${variant}` : ""}`;
+  entry.textContent = message;
+  logEl.prepend(entry);
+}
+
+function uniquifyZipEntryName(filename, usedNames) {
+  const dotIndex = filename.lastIndexOf(".");
+  const base = dotIndex >= 0 ? filename.slice(0, dotIndex) : filename;
+  const ext = dotIndex >= 0 ? filename.slice(dotIndex) : "";
+  let candidate = filename;
+  let counter = 2;
+
+  while (usedNames.has(candidate)) {
+    candidate = `${base} (${counter})${ext}`;
+    counter += 1;
+  }
+
+  usedNames.add(candidate);
+  return candidate;
+}
+
+class SimpleZipBuilder {
+  constructor() {
+    this.entries = [];
+  }
+
+  addText(name, text) {
+    const data = new TextEncoder().encode(String(text ?? ""));
+    this.entries.push({
+      name,
+      data,
+      crc32: crc32(data),
+      date: new Date()
+    });
+  }
+
+  buildBlob() {
+    const localChunks = [];
+    const centralChunks = [];
+    let offset = 0;
+
+    for (const entry of this.entries) {
+      const nameBytes = new TextEncoder().encode(entry.name);
+      const { time, date } = toDosDateTime(entry.date);
+
+      const localHeader = new Uint8Array(30 + nameBytes.length);
+      const localView = new DataView(localHeader.buffer);
+      localView.setUint32(0, 0x04034b50, true);
+      localView.setUint16(4, 20, true);
+      localView.setUint16(6, 0x0800, true);
+      localView.setUint16(8, 0, true);
+      localView.setUint16(10, time, true);
+      localView.setUint16(12, date, true);
+      localView.setUint32(14, entry.crc32 >>> 0, true);
+      localView.setUint32(18, entry.data.length, true);
+      localView.setUint32(22, entry.data.length, true);
+      localView.setUint16(26, nameBytes.length, true);
+      localView.setUint16(28, 0, true);
+      localHeader.set(nameBytes, 30);
+
+      const centralHeader = new Uint8Array(46 + nameBytes.length);
+      const centralView = new DataView(centralHeader.buffer);
+      centralView.setUint32(0, 0x02014b50, true);
+      centralView.setUint16(4, 20, true);
+      centralView.setUint16(6, 20, true);
+      centralView.setUint16(8, 0x0800, true);
+      centralView.setUint16(10, 0, true);
+      centralView.setUint16(12, time, true);
+      centralView.setUint16(14, date, true);
+      centralView.setUint32(16, entry.crc32 >>> 0, true);
+      centralView.setUint32(20, entry.data.length, true);
+      centralView.setUint32(24, entry.data.length, true);
+      centralView.setUint16(28, nameBytes.length, true);
+      centralView.setUint16(30, 0, true);
+      centralView.setUint16(32, 0, true);
+      centralView.setUint16(34, 0, true);
+      centralView.setUint16(36, 0, true);
+      centralView.setUint32(38, 0, true);
+      centralView.setUint32(42, offset, true);
+      centralHeader.set(nameBytes, 46);
+
+      localChunks.push(localHeader, entry.data);
+      centralChunks.push(centralHeader);
+      offset += localHeader.length + entry.data.length;
+    }
+
+    const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const endRecord = new Uint8Array(22);
+    const endView = new DataView(endRecord.buffer);
+    endView.setUint32(0, 0x06054b50, true);
+    endView.setUint16(4, 0, true);
+    endView.setUint16(6, 0, true);
+    endView.setUint16(8, this.entries.length, true);
+    endView.setUint16(10, this.entries.length, true);
+    endView.setUint32(12, centralSize, true);
+    endView.setUint32(16, offset, true);
+    endView.setUint16(20, 0, true);
+
+    return new Blob([...localChunks, ...centralChunks, endRecord], { type: "application/zip" });
+  }
+}
+
+function toDosDateTime(date) {
+  const year = Math.max(1980, date.getFullYear());
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const seconds = Math.floor(date.getSeconds() / 2);
+
+  return {
+    time: (hours << 11) | (minutes << 5) | seconds,
+    date: ((year - 1980) << 9) | (month << 5) | day
+  };
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let c = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[index] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const value of bytes) {
+    crc = CRC32_TABLE[(crc ^ value) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
