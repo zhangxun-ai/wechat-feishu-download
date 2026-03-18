@@ -11,7 +11,7 @@
       <header class="hero">
         <p class="eyebrow">MVP</p>
         <h1>文档本地导出</h1>
-        <p class="subtitle">当前版本支持飞书 `docx/wiki` 与微信公众号文章导出到本地。</p>
+        <p class="subtitle">支持飞书文档与微信公众号文章导出到本地。</p>
       </header>
 
       <section class="panel">
@@ -30,24 +30,21 @@
 
         <div class="actions">
           <button id="exportMarkdown" class="button button-primary" disabled>导出 Markdown</button>
-          <button id="exportJson" class="button" disabled>导出 JSON</button>
         </div>
 
         <label class="toggle" for="includeImages">
           <input id="includeImages" type="checkbox" checked>
           <span class="toggle-copy">
             <span class="toggle-title">Markdown 包含图片</span>
-            <span class="toggle-desc">关闭后只导出正文文字和标题，不抓取图片。这个选项同时作用于单篇导出、批量下载和公众号范围下载。</span>
+            <span class="toggle-desc">关闭后只导出正文文字，速度更快，也更适合做 AI 分析。</span>
           </span>
         </label>
-
-        <p class="hint">Markdown 会按站点分别导出：飞书走 `client_vars` 结构化数据，公众号走正文 HTML 提取；JSON 则保留调试所需原始数据。</p>
       </section>
 
       <section class="panel">
         <div class="panel-head">
           <h2>批量下载</h2>
-          <p class="subtitle-inline">点击开始后会打开独立任务页。后续批量下载会在任务页里继续执行，不再依赖这个弹窗保持打开。</p>
+          <p class="subtitle-inline">点击后会打开任务页，批量下载会在任务页继续执行。</p>
         </div>
 
         <div id="batchStatus" class="status status-loading">尚未开始批量任务。</div>
@@ -63,25 +60,22 @@
             <input id="batchZipOutput" type="checkbox" checked>
             <span class="toggle-copy">
               <span class="toggle-title">批量结果打包为 ZIP</span>
-              <span class="toggle-desc">推荐开启。批量任务会把所有 Markdown 打成一个 ZIP，更方便管理和分享。</span>
+              <span class="toggle-desc">推荐开启，更方便保存和管理。</span>
             </span>
           </label>
           <button id="batchDownloadLinks" class="button button-primary">批量下载链接列表</button>
           <div id="batchLog" class="log" aria-live="polite"></div>
-        </div>
-
-        <div class="divider"></div>
-
-        <div class="note-card">
-          <p class="note-title">公众号范围下载</p>
-          <p class="note-copy">推荐走浏览器里的公众号后台登录态。只要你在当前 Chrome 里登录过 `mp.weixin.qq.com`，扩展就能自动发现同号历史文章并继续批量下载。</p>
         </div>
       </section>
 
       <section class="panel">
         <div class="panel-head">
           <h2>公众号后台模式</h2>
-          <p class="subtitle-inline">推荐方案。无需本地 helper、无需系统代理、无需手机微信，只复用你当前 Chrome 里的 `mp.weixin.qq.com` 登录态。</p>
+        </div>
+
+        <div class="note-card note-card-highlight">
+          <p class="note-title">使用前先完成这一步</p>
+          <p class="note-copy">先在当前 Chrome 登录 `mp.weixin.qq.com`，再回来执行“按范围批量下载”。</p>
         </div>
 
         <div id="helperStatus" class="status status-loading">尚未检测公众号后台登录状态。</div>
@@ -121,7 +115,6 @@
         </div>
 
         <div id="helperLog" class="log" aria-live="polite"></div>
-        <p class="hint hint-tight">如果还没在当前 Chrome 里登录 `mp.weixin.qq.com`，先点“打开后台登录页”完成一次登录，再回来执行“按范围批量下载”。</p>
       </section>
     </main>
 

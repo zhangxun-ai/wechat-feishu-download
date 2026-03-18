@@ -6,7 +6,6 @@ const statusEl = document.getElementById("status");
 const titleEl = document.getElementById("docTitle");
 const typeEl = document.getElementById("docType");
 const exportMarkdownButton = document.getElementById("exportMarkdown");
-const exportJsonButton = document.getElementById("exportJson");
 const includeImagesInput = document.getElementById("includeImages");
 const includeImagesHelperInput = document.getElementById("includeImagesHelper");
 const batchZipOutputInput = document.getElementById("batchZipOutput");
@@ -32,7 +31,6 @@ init().catch((error) => {
 });
 
 exportMarkdownButton.addEventListener("click", () => handleExport("markdown"));
-exportJsonButton.addEventListener("click", () => handleExport("json"));
 batchDownloadLinksButton.addEventListener("click", handleBatchDownloadLinks);
 helperCheckButton.addEventListener("click", () => refreshWechatMpStatus({ silent: false }));
 openWechatMpLoginButton.addEventListener("click", handleOpenWechatMpLogin);
@@ -490,7 +488,6 @@ async function downloadWithFallback(url, filename, format, saveAs) {
 
 function setButtonsDisabled(disabled) {
   exportMarkdownButton.disabled = disabled;
-  exportJsonButton.disabled = disabled;
 }
 
 function setBatchControlsDisabled(disabled) {
