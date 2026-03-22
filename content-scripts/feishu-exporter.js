@@ -212,6 +212,7 @@
     if (format === "markdown") {
       const clientVars = await fetchClientVars(meta.exportToken, meta.jssdkSession);
       let markdownBody = await convertClientVarsToMarkdown(meta, clientVars, options);
+      markdownBody = maybeReplaceFeishuMarkdownWithDom(markdownBody);
       if (options.includeImages === false) {
         markdownBody = stripMarkdownImages(markdownBody);
       }
@@ -241,6 +242,50 @@
       mimeType: "application/json;charset=utf-8",
       content: JSON.stringify(payload, null, 2)
     };
+  }
+
+  function maybeReplaceFeishuMarkdownWithDom(clientVarsMarkdown) {
+    if (!hasVisibleFeishuTable()) {
+      return clientVarsMarkdown;
+    }
+
+    const domMarkdown = extractDocumentMarkdown();
+    if (!domMarkdown) {
+      return clientVarsMarkdown;
+    }
+
+    const structuredHasTable = containsMarkdownTable(clientVarsMarkdown);
+    const domHasTable = containsMarkdownTable(domMarkdown);
+
+    if (!structuredHasTable && domHasTable) {
+      return domMarkdown;
+    }
+
+    return clientVarsMarkdown;
+  }
+
+  function hasVisibleFeishuTable() {
+    try {
+      const root = findExportRoot();
+      return Boolean(root?.querySelector?.("table"));
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function containsMarkdownTable(markdown) {
+    const lines = String(markdown || "").split("\n");
+    for (let index = 0; index < lines.length - 1; index += 1) {
+      const current = lines[index].trim();
+      const next = lines[index + 1].trim();
+      if (!current.startsWith("|") || !current.endsWith("|")) {
+        continue;
+      }
+      if (/^\|(?:\s*:?-{3,}:?\s*\|)+$/.test(next)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async function exportWechatDocument(format, options) {
@@ -1250,6 +1295,7 @@
       blockMap,
       includeImages: options.includeImages !== false,
       imageMap: options.includeImages === false ? new Map() : await buildEmbeddedImageMap(blockMap),
+      sheetMap: await buildSheetMarkdownMap(meta, blockMap),
       rootId: meta.exportToken,
       pageTitle: meta.title
     };
@@ -1324,6 +1370,8 @@
         return renderBulletBlock(block, context, depth);
       case "image":
         return renderImageBlock(blockId, block, context);
+      case "sheet":
+        return renderSheetBlock(blockId, context);
       case "callout":
         return renderQuotedChildren(block.data.children || [], context, depth);
       case "quote_container":
@@ -1367,6 +1415,10 @@
 
     const alt = normalizeInlineText(block.data.image?.name || "飞书文档图片");
     return `![${alt}](${src})`;
+  }
+
+  function renderSheetBlock(blockId, context) {
+    return context.sheetMap.get(blockId) || "";
   }
 
   function renderQuotedChildren(children, context, depth) {
@@ -1423,6 +1475,672 @@
     }
 
     return embeddedMap;
+  }
+
+  async function buildSheetMarkdownMap(meta, blockMap) {
+    const runtimeMap = buildRuntimeSheetMarkdownMap(blockMap);
+    if (runtimeMap.size > 0) {
+      return runtimeMap;
+    }
+
+    const sheetBlocks = Object.entries(blockMap)
+      .filter(([, block]) => block?.data?.type === "sheet" && block?.data?.token)
+      .map(([blockId, block]) => ({
+        blockId,
+        id: blockId,
+        type: "sheet",
+        version: Number(block.version || 1),
+        parent_id: block.data.parent_id || meta.exportToken,
+        token: block.data.token
+      }));
+
+    if (sheetBlocks.length === 0) {
+      return new Map();
+    }
+
+    try {
+      const response = await fetch("https://internal-api-space.feishu.cn/space/api/ssr/docx/blocks/", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json;charset=UTF-8"
+        },
+        body: JSON.stringify({
+          blockInfos: sheetBlocks.map(({ blockId, ...payload }) => payload),
+          token: meta.exportToken,
+          options: {
+            branch: getFeishuTemplateBranch(),
+            biz: meta.pageType === "wiki" ? "wiki" : "docx"
+          }
+        })
+      });
+
+      if (!response.ok) {
+        return new Map();
+      }
+
+      const payload = await response.json();
+      if (payload?.code !== 0 || !Array.isArray(payload.data)) {
+        return new Map();
+      }
+
+      const markdownMap = new Map();
+      for (let index = 0; index < sheetBlocks.length; index += 1) {
+        const sheetBlock = sheetBlocks[index];
+        const ssrData = payload.data[index]?.ssrData;
+        const markdown = convertSheetSsrToMarkdown(ssrData);
+        if (markdown) {
+          markdownMap.set(sheetBlock.blockId, markdown);
+        }
+      }
+
+      return markdownMap;
+    } catch (error) {
+      return new Map();
+    }
+  }
+
+  function buildRuntimeSheetMarkdownMap(blockMap) {
+    const markdownMap = new Map();
+    const containers = Array.from(document.querySelectorAll('[data-sheet-element="embeddedSheetContainer"]'));
+
+    for (const container of containers) {
+      const wrapper = container.closest("[data-record-id]");
+      const blockId = wrapper?.getAttribute("data-record-id");
+      if (!blockId || !blockMap[blockId] || markdownMap.has(blockId)) {
+        continue;
+      }
+
+      const dataModel = getEmbeddedSheetDataModel(container);
+      const markdown = convertSheetRuntimeToMarkdown(dataModel);
+      if (markdown) {
+        markdownMap.set(blockId, markdown);
+      }
+    }
+
+    return markdownMap;
+  }
+
+  function getEmbeddedSheetDataModel(container) {
+    const fiber = getReactFiberNode(container);
+    if (!fiber) {
+      return null;
+    }
+
+    let current = fiber;
+    let hops = 0;
+    while (current && hops < 80) {
+      const props = current.memoizedProps || current.pendingProps;
+      const shell = props?.shell;
+      const dataModel = shell?.sheet?._dataModel;
+      if (dataModel) {
+        return dataModel;
+      }
+      current = current.return || null;
+      hops += 1;
+    }
+
+    return null;
+  }
+
+  function getReactFiberNode(element) {
+    if (!element || typeof element !== "object") {
+      return null;
+    }
+
+    const key = Object.keys(element).find((name) => {
+      return name.startsWith("__reactFiber$") || name.startsWith("__reactInternalInstance$");
+    });
+
+    return key ? element[key] : null;
+  }
+
+  function convertSheetRuntimeToMarkdown(dataModel) {
+    if (!dataModel || typeof dataModel.serialize !== "function") {
+      return "";
+    }
+
+    try {
+      const payload = dataModel.serialize()?.mutation?.setRangeValues;
+      if (!payload?.range || !payload?.cells?.cellIds || !payload?.cells?.cells) {
+        return "";
+      }
+
+      const range = payload.range;
+      const startRow = Number(range.startRow || 0);
+      const startCol = Number(range.startCol || 0);
+      const endRow = Number(range.endRow || 0);
+      const endCol = Number(range.endCol || 0);
+      const rowCount = endRow - startRow;
+      const columnCount = endCol - startCol;
+
+      if (rowCount <= 0 || columnCount <= 0) {
+        return "";
+      }
+
+      const matrix = Array.from({ length: rowCount }, () => Array.from({ length: columnCount }, () => ""));
+      const cellIds = payload.cells.cellIds;
+      const cellPool = payload.cells.cells;
+
+      for (let index = 0; index < cellIds.length; index += 1) {
+        const rowIndex = Math.floor(index / columnCount);
+        const columnIndex = index % columnCount;
+        if (rowIndex >= rowCount || columnIndex >= columnCount) {
+          break;
+        }
+
+        const cellId = cellIds[index];
+        const cell = cellPool[cellId];
+        matrix[rowIndex][columnIndex] = escapeMarkdownTableCell(
+          resolveRuntimeSheetCellValue(
+            dataModel,
+            payload,
+            cell,
+            startRow + rowIndex,
+            startCol + columnIndex
+          )
+        );
+      }
+
+      const normalized = trimEmptySheetMatrix(matrix);
+      if (normalized.length < 2 || normalized[0].length === 0) {
+        return "";
+      }
+
+      const header = normalized[0];
+      const separator = header.map(() => "---");
+      const body = normalized.slice(1);
+
+      return [
+        `| ${header.join(" | ")} |`,
+        `| ${separator.join(" | ")} |`,
+        ...body.map((row) => `| ${row.join(" | ")} |`)
+      ].join("\n");
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function resolveRuntimeSheetCellValue(dataModel, payload, cell, rowIndex, columnIndex) {
+    const runtimeValue = readRuntimeSheetDisplayValue(dataModel, rowIndex, columnIndex);
+    if (runtimeValue) {
+      return runtimeValue;
+    }
+
+    return resolveSerializedSheetCellValue(cell, payload, rowIndex, columnIndex);
+  }
+
+  function readRuntimeSheetDisplayValue(dataModel, rowIndex, columnIndex) {
+    if (typeof dataModel.getValue !== "function") {
+      return "";
+    }
+
+    try {
+      const rawValue = dataModel.getValue(rowIndex, columnIndex);
+      return normalizeRuntimeSheetValue(rawValue);
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function normalizeRuntimeSheetValue(value) {
+    if (value == null) {
+      return "";
+    }
+
+    if (typeof value === "string") {
+      return cleanupInline(value);
+    }
+
+    if (typeof value === "number") {
+      return formatSheetNumberValue(value);
+    }
+
+    if (Array.isArray(value)) {
+      return cleanupInline(value.map((item) => normalizeRuntimeSheetValue(item)).filter(Boolean).join(" "));
+    }
+
+    if (typeof value === "object") {
+      for (const key of ["displayValue", "formattedValue", "displayText", "text", "value", "v"]) {
+        if (value[key] != null) {
+          const normalized = normalizeRuntimeSheetValue(value[key]);
+          if (normalized) {
+            return normalized;
+          }
+        }
+      }
+    }
+
+    return "";
+  }
+
+  function resolveSerializedSheetCellValue(cell, payload, rowIndex, columnIndex) {
+    if (!cell || typeof cell !== "object") {
+      return "";
+    }
+
+    const strings = payload?.valueRefDelta?.strings || [];
+    const numbers = payload?.valueRefDelta?.numbers || [];
+    const valueType = Number(cell.valueType || 0);
+    const valueId = Number(cell.valueId || 0);
+
+    if (valueType === 3) {
+      return cleanupInline(String(strings[valueId] || "").replace(/\n/g, "<br>"));
+    }
+
+    if (valueType === 2) {
+      const numberValue = Number(numbers[valueId]);
+      if (!Number.isFinite(numberValue)) {
+        return "";
+      }
+
+      return formatSerializedSheetNumber(numberValue, payload, rowIndex, columnIndex);
+    }
+
+    return "";
+  }
+
+  function formatSerializedSheetNumber(numberValue, payload, rowIndex, columnIndex) {
+    const headerValue = payload?.valueRefDelta?.strings?.[columnIndex] || "";
+    if (/%|占比/.test(String(headerValue)) || (numberValue > 0 && numberValue < 1)) {
+      const percentage = `${stripTrailingZeros((numberValue * 100).toFixed(2))}%`;
+      return cleanupInline(percentage);
+    }
+
+    return formatSheetNumberValue(numberValue);
+  }
+
+  function formatSheetNumberValue(numberValue) {
+    if (!Number.isFinite(numberValue)) {
+      return "";
+    }
+
+    if (Number.isInteger(numberValue)) {
+      return String(numberValue);
+    }
+
+    return stripTrailingZeros(numberValue.toFixed(4));
+  }
+
+  function stripTrailingZeros(value) {
+    return String(value)
+      .replace(/(\.\d*?[1-9])0+$/u, "$1")
+      .replace(/\.0+$/u, "")
+      .trim();
+  }
+
+  function trimEmptySheetMatrix(matrix) {
+    if (!Array.isArray(matrix) || matrix.length === 0) {
+      return [];
+    }
+
+    const nonEmptyRows = matrix.filter((row) => row.some((cell) => cleanupInline(cell)));
+    if (nonEmptyRows.length === 0) {
+      return [];
+    }
+
+    let maxColumnCount = 0;
+    for (const row of nonEmptyRows) {
+      for (let index = row.length - 1; index >= 0; index -= 1) {
+        if (cleanupInline(row[index])) {
+          maxColumnCount = Math.max(maxColumnCount, index + 1);
+          break;
+        }
+      }
+    }
+
+    return nonEmptyRows.map((row) => row.slice(0, maxColumnCount));
+  }
+
+  function getFeishuTemplateBranch() {
+    const match = document.cookie.match(/(?:^|;\s*)template-branch-list=([^;]+)/);
+    return decodeURIComponent(match?.[1] || "release-web-2026.3.3");
+  }
+
+  function convertSheetSsrToMarkdown(ssrData) {
+    if (!ssrData) {
+      return "";
+    }
+
+    try {
+      const doc = new DOMParser().parseFromString(ssrData, "text/html");
+      const allTextNodes = Array.from(doc.querySelectorAll("svg text"))
+        .map((node) => {
+          const position = getSvgTextPosition(node);
+          return {
+            text: cleanupMarkdown(node.textContent || ""),
+            x: position.x,
+            y: position.y,
+            className: node.getAttribute("class") || ""
+          };
+        })
+        .filter((item) => item.text);
+
+      if (allTextNodes.length === 0) {
+        return "";
+      }
+
+      const contentNodes = allTextNodes.filter((item) => !isSheetAxisNode(item));
+      const normalizedRows = buildSheetRowsFromTextAnchors(contentNodes);
+      if (normalizedRows.length < 2 || normalizedRows[0].every((cell) => !cell)) {
+        return "";
+      }
+
+      const header = normalizedRows[0];
+      const separator = header.map(() => "---");
+      const body = normalizedRows.slice(1);
+
+      return [
+        `| ${header.join(" | ")} |`,
+        `| ${separator.join(" | ")} |`,
+        ...body.map((row) => `| ${row.join(" | ")} |`)
+      ].join("\n");
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function buildSheetRowsFromTextAnchors(contentNodes) {
+    if (!Array.isArray(contentNodes) || contentNodes.length === 0) {
+      return [];
+    }
+
+    const rowClusters = clusterSheetRows(contentNodes);
+    if (rowClusters.length < 2) {
+      return [];
+    }
+
+    const headerNodes = [...rowClusters[0].nodes].sort((left, right) => left.x - right.x);
+    const columnAnchors = headerNodes.map((node) => node.x);
+    if (columnAnchors.length < 2) {
+      return [];
+    }
+
+    return rowClusters.map((cluster) => {
+      const columns = Array.from({ length: columnAnchors.length }, () => []);
+      for (const node of cluster.nodes) {
+        const columnIndex = findColumnIndexFromAnchors(columnAnchors, node.x);
+        if (columnIndex === -1) {
+          continue;
+        }
+        columns[columnIndex].push(node);
+      }
+
+      return columns.map((cellNodes) => escapeMarkdownTableCell(collapseSheetCellText(cellNodes)));
+    });
+  }
+
+  function clusterSheetRows(nodes) {
+    const sorted = [...nodes].sort((left, right) => {
+      if (Math.abs(left.y - right.y) > 1) {
+        return left.y - right.y;
+      }
+      return left.x - right.x;
+    });
+
+    const clusters = [];
+    for (const node of sorted) {
+      const last = clusters[clusters.length - 1];
+      if (!last || Math.abs(node.y - last.centerY) > 24) {
+        clusters.push({
+          centerY: node.y,
+          nodes: [node]
+        });
+        continue;
+      }
+
+      last.nodes.push(node);
+      last.centerY = last.nodes.reduce((sum, item) => sum + item.y, 0) / last.nodes.length;
+    }
+
+    return clusters;
+  }
+
+  function findColumnIndexFromAnchors(anchors, x) {
+    if (!Array.isArray(anchors) || anchors.length === 0) {
+      return -1;
+    }
+
+    for (let index = 0; index < anchors.length; index += 1) {
+      const leftBoundary = index === 0 ? -Infinity : (anchors[index - 1] + anchors[index]) / 2;
+      const rightBoundary = index === anchors.length - 1 ? Infinity : (anchors[index] + anchors[index + 1]) / 2;
+      if (x >= leftBoundary && x < rightBoundary) {
+        return index;
+      }
+    }
+
+    return anchors.length - 1;
+  }
+
+  function findNearestIndex(values, target) {
+    if (!Array.isArray(values) || values.length === 0) {
+      return -1;
+    }
+
+    let nearestIndex = 0;
+    let nearestDistance = Math.abs(values[0] - target);
+    for (let index = 1; index < values.length; index += 1) {
+      const distance = Math.abs(values[index] - target);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIndex = index;
+      }
+    }
+    return nearestIndex;
+  }
+
+  function isSheetAxisNode(node) {
+    const text = String(node?.text || "").trim();
+    if (!text) {
+      return false;
+    }
+
+    const x = Number(node?.x);
+    const y = Number(node?.y);
+    const isColumnAxis = /^[A-Z]+$/.test(text) && Number.isFinite(y) && y < 24;
+    const isRowAxis = /^\d+$/.test(text) && Number.isFinite(x) && x < 40;
+
+    return isColumnAxis || isRowAxis;
+  }
+
+  function isSheetContentNodeWithinGrid(node, columnBoundaries, rowBoundaries) {
+    if (!node || isSheetAxisNode(node)) {
+      return false;
+    }
+
+    const minX = columnBoundaries[0];
+    const maxX = columnBoundaries[columnBoundaries.length - 1];
+    const minY = rowBoundaries[0];
+    const maxY = rowBoundaries[rowBoundaries.length - 1];
+
+    return node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY;
+  }
+
+  function findBoundaryIndex(boundaries, target) {
+    if (!Array.isArray(boundaries) || boundaries.length < 2) {
+      return -1;
+    }
+
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const start = boundaries[index];
+      const end = boundaries[index + 1];
+      if (target >= start && target <= end) {
+        return index;
+      }
+    }
+
+    return -1;
+  }
+
+  function getSvgTextPosition(node) {
+    const baseX = Number.parseFloat(node.getAttribute("x") || "0");
+    const baseY = Number.parseFloat(node.getAttribute("y") || "0");
+    let offsetX = 0;
+    let offsetY = 0;
+    let current = node;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      const transform = current.getAttribute?.("transform") || "";
+      const offset = parseSvgTransformOffset(transform);
+      offsetX += offset.x;
+      offsetY += offset.y;
+      current = current.parentElement;
+    }
+
+    return {
+      x: baseX + offsetX,
+      y: baseY + offsetY
+    };
+  }
+
+  function parseSvgTransformOffset(transform) {
+    const value = String(transform || "").trim();
+    if (!value) {
+      return { x: 0, y: 0 };
+    }
+
+    const matrixMatch = value.match(/matrix\(\s*[-\d.eE]+\s+[-\d.eE]+\s+[-\d.eE]+\s+[-\d.eE]+\s+([-\d.eE]+)\s+([-\d.eE]+)\s*\)/);
+    if (matrixMatch) {
+      return {
+        x: Number.parseFloat(matrixMatch[1] || "0") || 0,
+        y: Number.parseFloat(matrixMatch[2] || "0") || 0
+      };
+    }
+
+    const translateMatch = value.match(/translate\(\s*([-\d.eE]+)(?:[\s,]+([-\d.eE]+))?\s*\)/);
+    if (translateMatch) {
+      return {
+        x: Number.parseFloat(translateMatch[1] || "0") || 0,
+        y: Number.parseFloat(translateMatch[2] || "0") || 0
+      };
+    }
+
+    return { x: 0, y: 0 };
+  }
+
+  function extractSheetGridBoundaries(doc) {
+    const verticals = [];
+    const horizontals = [];
+
+    for (const line of doc.querySelectorAll("svg line")) {
+      const offset = getSvgNodeOffset(line);
+      const x1 = Number.parseFloat(line.getAttribute("x1") || "0") + offset.x;
+      const y1 = Number.parseFloat(line.getAttribute("y1") || "0") + offset.y;
+      const x2 = Number.parseFloat(line.getAttribute("x2") || "0") + offset.x;
+      const y2 = Number.parseFloat(line.getAttribute("y2") || "0") + offset.y;
+
+      if (Math.abs(x1 - x2) < 1 && Math.abs(y1 - y2) > 20) {
+        verticals.push((x1 + x2) / 2);
+      } else if (Math.abs(y1 - y2) < 1 && Math.abs(x1 - x2) > 40) {
+        horizontals.push((y1 + y2) / 2);
+      }
+    }
+
+    for (const path of doc.querySelectorAll("svg path")) {
+      const points = parseSvgPathPoints(path.getAttribute("d") || "");
+      if (points.length < 2) {
+        continue;
+      }
+
+      const offset = getSvgNodeOffset(path);
+      const xs = points.map((point) => point.x + offset.x);
+      const ys = points.map((point) => point.y + offset.y);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+
+      if (maxX - minX < 1 && maxY - minY > 20) {
+        verticals.push((minX + maxX) / 2);
+      } else if (maxY - minY < 1 && maxX - minX > 40) {
+        horizontals.push((minY + maxY) / 2);
+      }
+    }
+
+    return {
+      verticals: dedupeSortedCoordinates(verticals),
+      horizontals: dedupeSortedCoordinates(horizontals)
+    };
+  }
+
+  function parseSvgPathPoints(d) {
+    const values = String(d || "").match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
+    const points = [];
+
+    for (let index = 0; index + 1 < values.length; index += 2) {
+      points.push({
+        x: Number.parseFloat(values[index] || "0") || 0,
+        y: Number.parseFloat(values[index + 1] || "0") || 0
+      });
+    }
+
+    return points;
+  }
+
+  function dedupeSortedCoordinates(values) {
+    const sorted = [...values]
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => left - right);
+
+    const unique = [];
+    for (const value of sorted) {
+      const previous = unique[unique.length - 1];
+      if (typeof previous === "number" && Math.abs(previous - value) < 2) {
+        continue;
+      }
+      unique.push(value);
+    }
+
+    return unique;
+  }
+
+  function getSvgNodeOffset(node) {
+    let offsetX = 0;
+    let offsetY = 0;
+    let current = node;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      const transform = current.getAttribute?.("transform") || "";
+      const offset = parseSvgTransformOffset(transform);
+      offsetX += offset.x;
+      offsetY += offset.y;
+      current = current.parentElement;
+    }
+
+    return { x: offsetX, y: offsetY };
+  }
+
+  function collapseSheetCellText(nodes) {
+    if (!Array.isArray(nodes) || nodes.length === 0) {
+      return "";
+    }
+
+    const sorted = [...nodes].sort((left, right) => {
+      if (Math.abs(left.y - right.y) > 1) {
+        return left.y - right.y;
+      }
+      return left.x - right.x;
+    });
+
+    const lines = [];
+    for (const node of sorted) {
+      const currentLine = lines[lines.length - 1];
+      if (!currentLine || Math.abs(currentLine.y - node.y) > 6) {
+        lines.push({ y: node.y, parts: [node.text] });
+        continue;
+      }
+
+      currentLine.parts.push(node.text);
+    }
+
+    return lines
+      .map((line) => cleanupInline(line.parts.join(" ")))
+      .filter(Boolean)
+      .join("<br>");
+  }
+
+  function escapeMarkdownTableCell(value) {
+    return String(value || "").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
   }
 
   async function fetchImageAsDataUrl(src) {
