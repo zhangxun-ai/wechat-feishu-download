@@ -12,7 +12,6 @@
     "128": "icon/128.png"
   },
   "permissions": [
-    "activeTab",
     "downloads",
     "scripting",
     "storage",
@@ -25,9 +24,7 @@
     "https://mp.weixin.qq.com/*",
     "https://mmbiz.qpic.cn/*",
     "https://mmsns.qpic.cn/*",
-    "https://mmbiz.qlogo.cn/*",
-    "http://127.0.0.1:17866/*",
-    "http://localhost:17866/*"
+    "https://mmbiz.qlogo.cn/*"
   ],
   "background": {
     "service_worker": "background.js"
