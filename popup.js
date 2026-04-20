@@ -43,6 +43,7 @@ init().catch((error) => {
 });
 
 exportMarkdownButton.addEventListener("click", () => handleExport("markdown"));
+exportCourseButton.addEventListener("click", handleCourseExport);
 batchDownloadLinksButton.addEventListener("click", handleBatchDownloadLinks);
 helperCheckButton.addEventListener("click", () => refreshWechatMpStatus({ silent: false }));
 openWechatMpLoginButton.addEventListener("click", handleOpenWechatMpLogin);
@@ -173,6 +174,31 @@ async function handleBatchDownloadLinks() {
     appendBatchLog(`已创建批量任务，共 ${job.links.length} 篇。`);
   } catch (error) {
     setBatchStatus(error.message || "批量下载失败", "error");
+  }
+}
+
+async function handleCourseExport() {
+  if (!activeTabId) {
+    setStatus("当前标签页不可用。", "error");
+    return;
+  }
+
+  setCourseExportAvailability(true, false);
+  setStatus("正在识别当前专栏目录…", "loading");
+
+  try {
+    const outline = await sendMessageWithRecovery(activeTabId, {
+      type: "feishu-export:get-scys-course-outline"
+    });
+    const job = await createStoredCourseExportJob(outline, {
+      includeImages: includeImagesInput.checked
+    });
+    await openBatchRunner(job.id);
+    setStatus(`已创建专栏导出任务，共 ${job.chapters.length} 章。任务将在新页面中继续。`, "ready");
+  } catch (error) {
+    setStatus(error.message || "专栏导出初始化失败", "error");
+  } finally {
+    setCourseExportAvailability(true, false);
   }
 }
 
@@ -375,7 +401,7 @@ function injectContentScript(tabId) {
     chrome.scripting.executeScript(
       {
         target: { tabId },
-        files: ["content-scripts/feishu-exporter.js"]
+        files: ["shared/scys-course-utils.js", "content-scripts/feishu-exporter.js"]
       },
       () => {
         if (chrome.runtime.lastError) {
@@ -445,6 +471,30 @@ async function createStoredBatchJob(links, options = {}) {
     links: normalizedLinks,
     account: options.account || null,
     dateRange: options.dateRange || null,
+    createdAt: new Date().toISOString()
+  };
+
+  await storageSet({ [`batchJob:${id}`]: job });
+  return job;
+}
+
+async function createStoredCourseExportJob(outline, options = {}) {
+  const chapters = Array.isArray(outline?.chapters) ? outline.chapters.filter(Boolean) : [];
+  if (chapters.length === 0) {
+    throw new Error("没有可处理的专栏章节");
+  }
+
+  const id = (crypto.randomUUID ? crypto.randomUUID() : `job-${Date.now()}`);
+  const title = String(outline?.courseTitle || "未命名专栏");
+  const job = {
+    id,
+    type: "course-export",
+    source: "scys-course",
+    title: `专栏导出 - ${title}`,
+    courseTitle: title,
+    courseUrl: String(outline?.courseUrl || ""),
+    includeImages: options.includeImages !== false,
+    chapters,
     createdAt: new Date().toISOString()
   };
 

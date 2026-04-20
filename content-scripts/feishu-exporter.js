@@ -1,12 +1,16 @@
 (function () {
   const MESSAGE_GET_PAGE_INFO = "feishu-export:get-page-info";
   const MESSAGE_EXPORT_DOCUMENT = "feishu-export:export-document";
+  const MESSAGE_GET_SCYS_COURSE_OUTLINE = "feishu-export:get-scys-course-outline";
   const MESSAGE_GET_WECHAT_HISTORY_SEED = "feishu-export:get-wechat-history-seed";
   const MESSAGE_GET_WECHAT_MP_LOGIN_STATUS = "feishu-export:get-wechat-mp-login-status";
   const MESSAGE_RESOLVE_WECHAT_MP_HISTORY = "feishu-export:resolve-wechat-mp-history";
   const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
   const WECHAT_MP_LOGIN_URL = "https://mp.weixin.qq.com/";
   const stripWechatUiNoiseFromMarkdown = globalThis.WechatMarkdownCleanup?.stripWechatUiNoiseFromMarkdown || ((value) => value);
+  const scysCourseUtils = globalThis.ScysCourseUtils || {};
+  const isScysCourseParsedUrl = (parsed) => scysCourseUtils.isScysCourseParsedUrl?.(parsed) || false;
+  const normalizeScysCourseEntries = (entries, baseUrl) => scysCourseUtils.normalizeScysCourseEntries?.(entries, baseUrl) || [];
   const WECHAT_MP_SEARCH_COUNT = 10;
   const WECHAT_MP_ARTICLE_PAGE_SIZE = 5;
   const WECHAT_MP_CANDIDATE_LIMIT = 6;
@@ -166,6 +170,7 @@
     if (!message || ![
       MESSAGE_GET_PAGE_INFO,
       MESSAGE_EXPORT_DOCUMENT,
+      MESSAGE_GET_SCYS_COURSE_OUTLINE,
       MESSAGE_GET_WECHAT_HISTORY_SEED,
       MESSAGE_GET_WECHAT_MP_LOGIN_STATUS,
       MESSAGE_RESOLVE_WECHAT_MP_HISTORY
@@ -187,6 +192,10 @@
 
     if (message.type === MESSAGE_EXPORT_DOCUMENT) {
       return exportDocument(message.format, message.options || {});
+    }
+
+    if (message.type === MESSAGE_GET_SCYS_COURSE_OUTLINE) {
+      return getScysCourseOutline();
     }
 
     if (message.type === MESSAGE_GET_WECHAT_HISTORY_SEED) {
@@ -264,6 +273,26 @@
     }
 
     throw new Error("当前页面不是受支持的导出页面");
+  }
+
+  function getScysCourseOutline() {
+    if (!isScysCoursePage()) {
+      throw new Error("当前页面不是生财课程章节页");
+    }
+
+    const entries = extractScysCourseEntriesFromStructuredState();
+    const fallbackEntries = entries.length > 0 ? entries : extractScysCourseEntriesFromDom();
+    const chapters = normalizeScysCourseEntries(fallbackEntries, location.href);
+
+    if (chapters.length === 0) {
+      throw new Error("未识别到当前专栏目录");
+    }
+
+    return {
+      courseTitle: getScysCourseTitle(),
+      courseUrl: location.href,
+      chapters
+    };
   }
 
   async function exportFeishuDocument(format, options) {
@@ -411,6 +440,146 @@
 
   function isGenericWebPage() {
     return /^https?:$/.test(location.protocol) && !isFeishuPage() && !isWechatArticlePage() && !isWechatMpBackendPage();
+  }
+
+  function isScysCoursePage() {
+    try {
+      return isScysCourseParsedUrl(new URL(location.href));
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function getScysCourseTitle() {
+    return normalizeGenericTitle(
+      document.querySelector('meta[property="og:title"]')?.getAttribute("content")
+      || document.querySelector('meta[name="twitter:title"]')?.getAttribute("content")
+      || extractVisibleTitle()
+      || document.title
+    );
+  }
+
+  function extractScysCourseEntriesFromStructuredState() {
+    const roots = [
+      globalThis.__NUXT__,
+      globalThis.__INITIAL_STATE__,
+      globalThis.__NEXT_DATA__,
+      globalThis.__PINIA__
+    ].filter(Boolean);
+    const entries = [];
+    const seen = new WeakSet();
+
+    for (const root of roots) {
+      collectScysEntriesFromValue(root, entries, seen, 0);
+      if (entries.length >= 200) {
+        break;
+      }
+    }
+
+    return entries;
+  }
+
+  function collectScysEntriesFromValue(value, entries, seen, depth) {
+    if (!value || depth > 5 || entries.length >= 200) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        collectScysEntriesFromValue(item, entries, seen, depth + 1);
+        if (entries.length >= 200) {
+          return;
+        }
+      }
+      return;
+    }
+
+    if (typeof value !== "object") {
+      return;
+    }
+
+    if (seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+
+    const explicitChapterId = value.chapterId || value.chapter_id || value.chapterID;
+    const explicitTitle = value.title || value.name || value.chapterTitle;
+    if (explicitChapterId && explicitTitle) {
+      entries.push({
+        chapterId: explicitChapterId,
+        title: explicitTitle
+      });
+    }
+
+    const urlCandidate = typeof value.url === "string"
+      ? value.url
+      : typeof value.href === "string"
+        ? value.href
+        : "";
+    if (urlCandidate) {
+      try {
+        const parsed = new URL(urlCandidate, location.href);
+        if (parsed.pathname === location.pathname && parsed.searchParams.has("chapterId")) {
+          entries.push({
+            chapterId: parsed.searchParams.get("chapterId"),
+            title: explicitTitle || value.label || value.text || ""
+          });
+        }
+      } catch (error) {
+        // ignore malformed state urls
+      }
+    }
+
+    for (const child of Object.values(value)) {
+      collectScysEntriesFromValue(child, entries, seen, depth + 1);
+      if (entries.length >= 200) {
+        return;
+      }
+    }
+  }
+
+  function extractScysCourseEntriesFromDom() {
+    const entries = [];
+    const anchorNodes = Array.from(document.querySelectorAll('a[href*="chapterId="]'));
+
+    for (const anchor of anchorNodes) {
+      if (!isVisible(anchor)) {
+        continue;
+      }
+
+      try {
+        const parsed = new URL(anchor.getAttribute("href"), location.href);
+        if (parsed.pathname !== location.pathname || !parsed.searchParams.has("chapterId")) {
+          continue;
+        }
+
+        entries.push({
+          chapterId: parsed.searchParams.get("chapterId"),
+          title: cleanupInline(anchor.textContent || anchor.getAttribute("title") || "")
+        });
+      } catch (error) {
+        // ignore malformed href values
+      }
+    }
+
+    if (entries.length > 0) {
+      return entries;
+    }
+
+    const chapterNodes = Array.from(document.querySelectorAll("[data-chapter-id]"));
+    for (const node of chapterNodes) {
+      if (!isVisible(node)) {
+        continue;
+      }
+
+      entries.push({
+        chapterId: node.getAttribute("data-chapter-id"),
+        title: cleanupInline(node.textContent || node.getAttribute("title") || "")
+      });
+    }
+
+    return entries;
   }
 
   async function exportGenericWebDocument(format, options) {
