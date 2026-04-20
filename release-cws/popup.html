@@ -11,7 +11,7 @@
       <header class="hero">
         <p class="eyebrow">MVP</p>
         <h1>文档本地导出</h1>
-        <p class="subtitle">支持飞书文档、微信公众号文章，以及当前网页导出到本地。</p>
+        <p class="subtitle">支持飞书文档与微信公众号文章导出到本地。</p>
       </header>
 
       <section class="panel">
@@ -54,7 +54,7 @@
           <textarea
             id="batchLinks"
             class="text-input text-area"
-            placeholder="每行一个链接。批量下载当前仍只支持飞书 docx/wiki 与微信公众号文章链接。"
+            placeholder="每行一个链接。支持飞书 docx/wiki 与微信公众号文章链接。"
           ></textarea>
           <label class="toggle" for="batchZipOutput">
             <input id="batchZipOutput" type="checkbox" checked>
@@ -118,7 +118,6 @@
       </section>
     </main>
 
-    <script src="shared/export-url-utils.js"></script>
     <script src="wechat-markdown-cleanup.js"></script>
     <script type="module" src="popup.js"></script>
   </body>

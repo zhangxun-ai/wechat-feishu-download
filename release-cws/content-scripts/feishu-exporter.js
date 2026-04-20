@@ -122,45 +122,6 @@
     ".mp_profile_iframe_wrp",
     ".js_img_loading"
   ].join(",");
-  const GENERIC_REMOVE_SELECTOR = [
-    "script",
-    "style",
-    "noscript",
-    "header",
-    "footer",
-    "nav",
-    "aside",
-    "form",
-    "dialog",
-    "button",
-    "input",
-    "textarea",
-    "select",
-    "label",
-    "canvas",
-    "iframe",
-    "svg",
-    "template",
-    ".toolbar",
-    ".sidebar",
-    ".sidenav",
-    ".catalog",
-    ".toc",
-    ".breadcrumb",
-    ".breadcrumbs",
-    ".share",
-    ".social",
-    ".related",
-    ".recommend",
-    ".comments",
-    ".comment",
-    ".advertisement",
-    ".advert",
-    ".ads",
-    ".popup",
-    ".modal",
-    ".mask"
-  ].join(",");
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || ![
@@ -233,17 +194,7 @@
       };
     }
 
-    if (isGenericWebPage()) {
-      const meta = getGenericWebMeta();
-
-      return {
-        title: meta.title,
-        docType: meta.pageType,
-        supports: ["markdown", "json"]
-      };
-    }
-
-    throw new Error("当前页面不是受支持的导出页面");
+    throw new Error("当前页面不是受支持的飞书或微信公众号页面");
   }
 
   async function exportDocument(format, options) {
@@ -259,11 +210,7 @@
       return exportWechatDocument(format, options);
     }
 
-    if (isGenericWebPage()) {
-      return exportGenericWebDocument(format, options);
-    }
-
-    throw new Error("当前页面不是受支持的导出页面");
+    throw new Error("当前页面不是受支持的飞书或微信公众号页面");
   }
 
   async function exportFeishuDocument(format, options) {
@@ -407,244 +354,6 @@
 
   function isWechatMpBackendPage() {
     return location.hostname === "mp.weixin.qq.com" && /^\/cgi-bin\//.test(location.pathname);
-  }
-
-  function isGenericWebPage() {
-    return /^https?:$/.test(location.protocol) && !isFeishuPage() && !isWechatArticlePage() && !isWechatMpBackendPage();
-  }
-
-  async function exportGenericWebDocument(format, options) {
-    const meta = getGenericWebMeta();
-    const liveRoot = getGenericExportRoot();
-    const rawHtml = liveRoot?.innerHTML || "";
-    const clonedRoot = liveRoot.cloneNode(true);
-
-    sanitizeGenericArticle(clonedRoot, { includeImages: options.includeImages !== false });
-    let markdownBody = cleanupMarkdown(convertBlock(clonedRoot, 0));
-
-    if (options.includeImages === false) {
-      markdownBody = stripMarkdownImages(markdownBody);
-    }
-
-    if (!markdownBody) {
-      throw new Error("未提取到网页正文");
-    }
-
-    if (format === "markdown") {
-      return {
-        filename: buildFilename(meta.title, "md"),
-        mimeType: "text/markdown;charset=utf-8",
-        content: buildMarkdownDocument(meta, markdownBody)
-      };
-    }
-
-    const payload = {
-      meta: {
-        title: meta.title,
-        pageType: meta.pageType,
-        sourceUrl: location.href,
-        author: meta.author || "",
-        publishTime: meta.publishTime || "",
-        exportedAt: new Date().toISOString()
-      },
-      articleHtml: rawHtml,
-      cleanedHtml: clonedRoot.innerHTML
-    };
-
-    return {
-      filename: buildFilename(meta.title, "json"),
-      mimeType: "application/json;charset=utf-8",
-      content: JSON.stringify(payload, null, 2)
-    };
-  }
-
-  function getGenericWebMeta() {
-    const title = normalizeGenericTitle(
-      document.querySelector('meta[property="og:title"]')?.getAttribute("content")
-      || document.querySelector('meta[name="twitter:title"]')?.getAttribute("content")
-      || extractVisibleTitle()
-      || document.title
-    );
-    const author = cleanupInline(
-      document.querySelector('meta[name="author"]')?.getAttribute("content")
-      || document.querySelector('[rel="author"]')?.textContent
-      || document.querySelector('[itemprop="author"]')?.textContent
-      || document.querySelector(".author, .byline, .article-author")?.textContent
-      || ""
-    );
-    const publishTime = cleanupInline(
-      document.querySelector('meta[property="article:published_time"]')?.getAttribute("content")
-      || document.querySelector('meta[name="pubdate"]')?.getAttribute("content")
-      || document.querySelector("time[datetime]")?.getAttribute("datetime")
-      || document.querySelector("time")?.textContent
-      || ""
-    );
-
-    return {
-      pageType: "网页文章",
-      exportType: "generic-web",
-      title: title || "未命名网页",
-      author,
-      publishTime
-    };
-  }
-
-  function getGenericExportRoot() {
-    const selectors = [
-      "article",
-      "[itemprop='articleBody']",
-      "main article",
-      "[role='main'] article",
-      "main",
-      "[role='main']",
-      ".article-content",
-      ".article__content",
-      ".post-content",
-      ".entry-content",
-      ".markdown-body",
-      ".rich-text",
-      ".ql-editor",
-      ".ProseMirror",
-      "[class*='article']",
-      "[class*='content']",
-      "[id*='article']",
-      "[id*='content']"
-    ];
-
-    for (const selector of selectors) {
-      const best = pickBestGenericNode(
-        Array.from(document.querySelectorAll(selector)).filter((node) => isVisible(node) && !shouldSkipGenericElement(node))
-      );
-      if (best) {
-        return best;
-      }
-    }
-
-    const fallbackCandidates = Array.from(document.querySelectorAll("article, main, section, div"))
-      .filter((node) => isVisible(node) && !shouldSkipGenericElement(node))
-      .slice(0, 1200);
-
-    return pickBestGenericNode(fallbackCandidates) || document.body;
-  }
-
-  function pickBestGenericNode(nodes) {
-    let best = null;
-    let bestScore = 0;
-
-    for (const node of nodes) {
-      const score = scoreGenericNode(node);
-      if (score > bestScore) {
-        best = node;
-        bestScore = score;
-      }
-    }
-
-    return best;
-  }
-
-  function scoreGenericNode(node) {
-    const textLength = cleanupInline(stripInvisibleText(node.innerText || "")).length;
-    if (textLength < 80) {
-      return 0;
-    }
-
-    const paragraphCount = node.querySelectorAll("p").length;
-    const listCount = node.querySelectorAll("li").length;
-    const headingCount = node.querySelectorAll("h1, h2, h3, h4").length;
-    const imageCount = node.querySelectorAll("img").length;
-    const noiseCount = node.querySelectorAll("nav, header, footer, aside, form, dialog").length;
-    const identity = `${node.id || ""} ${typeof node.className === "string" ? node.className : ""}`;
-    const semanticBoost = /article|post|entry|content|detail|rich|markdown|正文/i.test(identity) ? 320 : 0;
-    const roleBoost = node.matches("article, main, [role='main'], [itemprop='articleBody']") ? 520 : 0;
-
-    return textLength
-      + (paragraphCount * 120)
-      + (listCount * 40)
-      + (headingCount * 80)
-      + (imageCount * 20)
-      + semanticBoost
-      + roleBoost
-      - (noiseCount * 180);
-  }
-
-  function sanitizeGenericArticle(root, options) {
-    for (const node of Array.from(root.querySelectorAll(GENERIC_REMOVE_SELECTOR))) {
-      node.remove();
-    }
-
-    for (const node of Array.from(root.querySelectorAll("*"))) {
-      if (shouldSkipGenericElement(node)) {
-        node.remove();
-        continue;
-      }
-
-      if (node.hidden || node.getAttribute("aria-hidden") === "true") {
-        node.remove();
-        continue;
-      }
-
-      const style = node.getAttribute("style") || "";
-      if (/display\s*:\s*none/i.test(style) || /visibility\s*:\s*hidden/i.test(style)) {
-        node.remove();
-      }
-    }
-
-    for (const media of Array.from(root.querySelectorAll("video, audio"))) {
-      const src = media.getAttribute("src") || media.querySelector("source")?.getAttribute("src") || "";
-      if (!src) {
-        media.remove();
-        continue;
-      }
-
-      const link = root.ownerDocument.createElement("a");
-      link.href = toAbsoluteUrl(src);
-      link.textContent = "媒体链接";
-      media.replaceWith(link);
-    }
-
-    for (const image of Array.from(root.querySelectorAll("img"))) {
-      const src = image.currentSrc || image.getAttribute("src") || image.getAttribute("data-src") || image.getAttribute("data-original") || "";
-
-      if (!options.includeImages || !src) {
-        image.remove();
-        continue;
-      }
-
-      image.setAttribute("src", toAbsoluteUrl(src));
-      image.setAttribute("alt", cleanupInline(image.getAttribute("alt") || image.getAttribute("title") || "网页图片") || "网页图片");
-      image.removeAttribute("srcset");
-      image.removeAttribute("loading");
-      image.removeAttribute("decoding");
-    }
-
-    cleanupEmptyGenericNodes(root);
-  }
-
-  function cleanupEmptyGenericNodes(root) {
-    const removableSelectors = ["p", "section", "div", "span"];
-    let changed = true;
-
-    while (changed) {
-      changed = false;
-      const nodes = Array.from(root.querySelectorAll(removableSelectors.join(",")));
-      for (const node of nodes) {
-        const hasMedia = node.querySelector("img, video, audio, table, pre, ul, ol");
-        const text = cleanupInline(node.textContent || "");
-        if (!hasMedia && !text && node.children.length === 0) {
-          node.remove();
-          changed = true;
-        }
-      }
-    }
-  }
-
-  function shouldSkipGenericElement(node) {
-    if (!(node instanceof Element)) {
-      return false;
-    }
-
-    const identity = `${node.id || ""} ${typeof node.className === "string" ? node.className : ""}`;
-    return /\b(comment|footer|header|nav|sidebar|aside|share|social|related|recommend|advert|ads|banner|popup|modal|subscribe|breadcrumb|catalog|toc|toolbar|toolbox)\b/i.test(identity);
   }
 
   async function getDocumentMeta(options) {
@@ -2850,12 +2559,6 @@
       .replace(/\s+-\s+飞书.*/, "")
       .replace(/\s+-\s+Lark.*/, "")
       .trim() || "未命名文档";
-  }
-
-  function normalizeGenericTitle(value) {
-    return stripInvisibleText(String(value || ""))
-      .replace(/\s*[\-|_·•｜|]\s*[^|｜\-_·•]{1,20}$/u, "")
-      .trim() || "未命名网页";
   }
 
   function extractVisibleTitle() {

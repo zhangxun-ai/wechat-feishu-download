@@ -1,11 +1,6 @@
 const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
 const DEFAULT_HISTORY_RANGE_DAYS = 30;
 const WECHAT_MP_LOGIN_URL = "https://mp.weixin.qq.com/";
-const exportUrlUtils = globalThis.ExportUrlUtils || {};
-const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || false;
-const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
-const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
-const isWechatMpBackendUrl = (url) => exportUrlUtils.isWechatMpBackendUrl?.(url) || false;
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
   const cleaned = typeof externalCleaner === "function" ? externalCleaner(value) : value;
@@ -72,9 +67,9 @@ async function init() {
     setPageMeta(pageInfo);
     setStatus("当前是公众号后台页，可用于公众号历史范围下载。", "ready");
     setButtonsDisabled(true);
-  } else if (!tab.url || !isSingleExportUrl(tab.url)) {
+  } else if (!tab.url || !isSupportedExportUrl(tab.url)) {
     setPageMeta(null);
-    setStatus("请先打开飞书、公众号文章，或当前网页正文页面。", "error");
+    setStatus("请先打开飞书 docx/wiki 或微信公众号文章页面。", "error");
     setButtonsDisabled(true);
   } else {
     try {
@@ -558,6 +553,35 @@ function clearHelperLog() {
   helperLogEl.innerHTML = "";
 }
 
+function isSupportedExportUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const isFeishuPage = /(^|\.)((feishu\.cn)|(larksuite\.com)|(larkoffice\.com))$/.test(parsed.hostname)
+      && /^\/(docx|wiki)\//.test(parsed.pathname);
+    return isFeishuPage || isWechatArticleUrl(url);
+  } catch (error) {
+    return false;
+  }
+}
+
+function isWechatArticleUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "mp.weixin.qq.com" && /^\/s(?:$|\/)/.test(parsed.pathname);
+  } catch (error) {
+    return false;
+  }
+}
+
+function isWechatMpBackendUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "mp.weixin.qq.com" && /^\/cgi-bin\//.test(parsed.pathname);
+  } catch (error) {
+    return false;
+  }
+}
+
 function normalizeWechatMarkdownPayload(payload) {
   if (!payload || payload.mimeType !== "text/markdown;charset=utf-8") {
     return payload;
@@ -623,7 +647,7 @@ function normalizeSupportedLinks(values) {
 
   for (const value of values || []) {
     const link = String(value || "").trim();
-    if (!link || !isBatchExportUrl(link) || unique.has(link)) {
+    if (!link || !isSupportedExportUrl(link) || unique.has(link)) {
       continue;
     }
 
@@ -762,7 +786,7 @@ function isTabReadyForExport(tab, sourceUrl) {
     return true;
   }
 
-  return isBatchExportUrl(currentUrl);
+  return isSupportedExportUrl(currentUrl);
 }
 
 function initializeHistoryDateRange() {

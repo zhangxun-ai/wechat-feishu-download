@@ -2,9 +2,6 @@ const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
 const INTER_TASK_DELAY_MS = 1200;
 const MAX_RETRIES = 2;
 const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
-const exportUrlUtils = globalThis.ExportUrlUtils || {};
-const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
-const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
   const cleaned = typeof externalCleaner === "function" ? externalCleaner(value) : value;
@@ -438,13 +435,34 @@ function isTabReadyForExport(tab, sourceUrl) {
   if (currentUrl === sourceUrl) {
     return true;
   }
-  return isBatchExportUrl(currentUrl);
+  return isSupportedExportUrl(currentUrl);
+}
+
+function isSupportedExportUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const isFeishuPage = /(^|\.)((feishu\.cn)|(larksuite\.com)|(larkoffice\.com))$/.test(parsed.hostname)
+      && /^\/(docx|wiki)\//.test(parsed.pathname);
+    const isWechatPage = parsed.hostname === "mp.weixin.qq.com" && /^\/s(?:$|\/)/.test(parsed.pathname);
+    return isFeishuPage || isWechatPage;
+  } catch (error) {
+    return false;
+  }
 }
 
 function closeTab(tabId) {
   return new Promise((resolve) => {
     chrome.tabs.remove(tabId, () => resolve());
   });
+}
+
+function isWechatArticleUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "mp.weixin.qq.com" && /^\/s(?:$|\/)/.test(parsed.pathname);
+  } catch (error) {
+    return false;
+  }
 }
 
 function normalizeWechatUrl(url) {
