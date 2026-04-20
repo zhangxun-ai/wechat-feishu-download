@@ -1,16 +1,18 @@
 const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
 const INTER_TASK_DELAY_MS = 1200;
 const MAX_RETRIES = 2;
-const COURSE_EXPORT_MAX_WORKERS = 2;
 const COURSE_EXPORT_WORKER_STAGGER_MS = 900;
 const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
 const courseExportBuilders = globalThis.CourseExportBuilders || {};
+const courseExportRuntime = globalThis.CourseExportRuntime || {};
 const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
 const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || false;
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const extractCourseChapterMarkdown = (value) => courseExportBuilders.extractCourseChapterMarkdown?.(value) || String(value || "").trim();
 const getCourseChapterMarkdownError = (value, sourceUrl) => courseExportBuilders.getCourseChapterMarkdownError?.(value, sourceUrl) || "";
+const formatElapsedDuration = (value) => courseExportRuntime.formatElapsedDuration?.(value) || "00:00";
+const getCourseExportWorkerCountForTotal = (totalCount) => courseExportRuntime.getCourseExportWorkerCount?.(totalCount) || 1;
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
   const cleaned = typeof externalCleaner === "function" ? externalCleaner(value) : value;
@@ -23,8 +25,15 @@ const statusEl = document.getElementById("jobStatus");
 const progressEl = document.getElementById("jobProgress");
 const successEl = document.getElementById("jobSuccess");
 const failureEl = document.getElementById("jobFailure");
+const workersEl = document.getElementById("jobWorkers");
+const elapsedEl = document.getElementById("jobElapsed");
+const workerPanelEl = document.getElementById("workerPanel");
+const workerGridEl = document.getElementById("workerGrid");
 const logEl = document.getElementById("jobLog");
 let wechatDirectFetchEnabled = true;
+let jobStartedAt = Date.now();
+let elapsedTimerId = 0;
+let workerStates = [];
 
 init().catch((error) => {
   setStatus(error.message || "任务初始化失败", "error");
@@ -43,10 +52,12 @@ async function init() {
   }
 
   const totalCount = getJobTotal(job);
+  jobStartedAt = Date.now();
   titleEl.textContent = job.title || (job.type === "course-export" ? "专栏导出任务" : "批量下载任务");
   metaEl.textContent = buildMeta(job);
   setStatus(`任务已加载，共 ${totalCount} ${getJobUnitLabel(job)}，开始处理。`, "loading");
   updateStats(0, 0, 0, totalCount);
+  startElapsedClock();
 
   try {
     if (job.type === "course-export") {
@@ -55,6 +66,8 @@ async function init() {
       await runLinkBatchJob(job);
     }
   } finally {
+    stopElapsedClock();
+    updateElapsedClock();
     await removeJob(jobId);
   }
 }
@@ -189,6 +202,9 @@ async function runCourseExportJob(job) {
   let successCount = 0;
   let failureCount = 0;
 
+  setWorkerCount(workerCount);
+  initializeWorkerPanel(workerCount);
+
   setStatus(`正在处理专栏，使用 ${workerCount} 个通道。`, "loading");
 
   await Promise.all(
@@ -198,7 +214,9 @@ async function runCourseExportJob(job) {
   updateStats(totalCount, successCount, failureCount, totalCount);
 
   if (successCount === 0) {
-    setStatus(`专栏导出失败，共 ${failureCount} 章。`, "error");
+    const elapsed = formatElapsedDuration(Date.now() - jobStartedAt);
+    setStatus(`专栏导出失败，共 ${failureCount} 章，总耗时 ${elapsed}。`, "error");
+    appendLog(`任务结束，总耗时 ${elapsed}。`, "error");
     return;
   }
 
@@ -228,10 +246,13 @@ async function runCourseExportJob(job) {
   await downloadGeneratedText(html, "text/html;charset=utf-8", htmlFilename, buildFallbackFilenameForExtension("html"));
   appendLog(`已下载: ${htmlFilename}`, "success");
 
+  const elapsed = formatElapsedDuration(Date.now() - jobStartedAt);
   if (failureCount === 0) {
-    setStatus(`专栏导出完成，已生成 Markdown 和 HTML，共 ${successCount} 章。`, "ready");
+    setStatus(`专栏导出完成，已生成 Markdown 和 HTML，共 ${successCount} 章，总耗时 ${elapsed}。`, "ready");
+    appendLog(`任务结束，总耗时 ${elapsed}。`, "success");
   } else {
-    setStatus(`专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章。`, "error");
+    setStatus(`专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章，总耗时 ${elapsed}。`, "error");
+    appendLog(`任务结束，总耗时 ${elapsed}。`, "error");
   }
 
   async function runCourseExportWorker(workerIndex) {
@@ -250,6 +271,7 @@ async function runCourseExportJob(job) {
         nextIndex += 1;
 
         const chapter = job.chapters[index];
+        setWorkerState(workerIndex, `正在处理 ${index + 1}/${totalCount}`, chapter.title);
         appendLog(`通道 ${workerIndex + 1} 开始处理 ${index + 1}/${totalCount}: ${chapter.title}`);
 
         try {
@@ -274,6 +296,7 @@ async function runCourseExportJob(job) {
             markdown
           };
           successCount += 1;
+          setWorkerState(workerIndex, `已完成 ${index + 1}/${totalCount}`, chapter.title);
           appendLog(`已提取: ${chapter.title}`, "success");
         } catch (error) {
           failureCount += 1;
@@ -282,6 +305,7 @@ async function runCourseExportJob(job) {
             url: chapter.url,
             message: error.message || "未知错误"
           });
+          setWorkerState(workerIndex, `失败 ${index + 1}/${totalCount}`, chapter.title);
           appendLog(`失败: ${chapter.title} | ${error.message || "未知错误"}`, "error");
         }
 
@@ -292,6 +316,7 @@ async function runCourseExportJob(job) {
         }
         await sleep(INTER_TASK_DELAY_MS + (workerIndex * 180));
       }
+      setWorkerState(workerIndex, "空闲", "等待其他通道完成");
     } finally {
       if (tabId !== null) {
         await closeTab(tabId);
@@ -302,10 +327,7 @@ async function runCourseExportJob(job) {
 
 function getCourseExportWorkerCount(job) {
   const totalCount = getJobTotal(job);
-  if (totalCount < 12) {
-    return 1;
-  }
-  return Math.min(COURSE_EXPORT_MAX_WORKERS, 2);
+  return getCourseExportWorkerCountForTotal(totalCount);
 }
 
 function getJobTotal(job) {
@@ -856,7 +878,7 @@ function buildMeta(job) {
       job.includeImages === false ? "不带图" : "带图",
       "单文件 Markdown",
       "单文件 HTML",
-      workerCount > 1 ? `${workerCount} 通道稳态模式` : "单通道稳态模式"
+      workerCount > 1 ? `${workerCount} 通道并行稳态模式` : "单通道稳态模式"
     ].join(" | ");
   }
 
@@ -872,6 +894,84 @@ function buildMeta(job) {
   pieces.push("串行稳态模式");
   pieces.push("公众号直抓优先");
   return pieces.join(" | ");
+}
+
+function startElapsedClock() {
+  stopElapsedClock();
+  updateElapsedClock();
+  elapsedTimerId = window.setInterval(updateElapsedClock, 1000);
+}
+
+function stopElapsedClock() {
+  if (elapsedTimerId) {
+    window.clearInterval(elapsedTimerId);
+    elapsedTimerId = 0;
+  }
+}
+
+function updateElapsedClock() {
+  if (elapsedEl) {
+    elapsedEl.textContent = formatElapsedDuration(Date.now() - jobStartedAt);
+  }
+}
+
+function setWorkerCount(value) {
+  if (workersEl) {
+    workersEl.textContent = `${value} 通道`;
+  }
+}
+
+function initializeWorkerPanel(workerCount) {
+  workerStates = Array.from({ length: workerCount }, (_, index) => ({
+    title: `通道 ${index + 1}`,
+    status: "等待启动",
+    detail: "尚未开始"
+  }));
+  renderWorkerPanel();
+}
+
+function setWorkerState(workerIndex, status, detail) {
+  if (!workerStates[workerIndex]) {
+    return;
+  }
+
+  workerStates[workerIndex] = {
+    ...workerStates[workerIndex],
+    status: String(status || "").trim() || "处理中",
+    detail: String(detail || "").trim() || "处理中"
+  };
+  renderWorkerPanel();
+}
+
+function renderWorkerPanel() {
+  if (!workerPanelEl || !workerGridEl) {
+    return;
+  }
+
+  if (workerStates.length === 0) {
+    workerPanelEl.hidden = true;
+    workerGridEl.innerHTML = "";
+    return;
+  }
+
+  workerPanelEl.hidden = false;
+  workerGridEl.innerHTML = workerStates.map((worker) => {
+    const detailClass = /^(尚未开始|等待其他通道完成)$/u.test(worker.detail) ? "worker-copy worker-copy-idle" : "worker-copy";
+    return [
+      '<div class="worker-card">',
+      `<div class="worker-title">${escapeHtml(worker.title)}</div>`,
+      `<div class="worker-copy">${escapeHtml(worker.status)}</div>`,
+      `<div class="${detailClass}">${escapeHtml(worker.detail)}</div>`,
+      "</div>"
+    ].join("");
+  }).join("");
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function updateStats(doneCount, successCount, failureCount, totalCount) {

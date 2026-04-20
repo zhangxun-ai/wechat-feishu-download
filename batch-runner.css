@@ -74,7 +74,7 @@ body {
 .stats {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -96,6 +96,52 @@ body {
   color: #2d2419;
   font-size: 24px;
   font-weight: 700;
+}
+
+.worker-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(142, 110, 61, 0.14);
+  background: rgba(255, 249, 239, 0.92);
+}
+
+.panel-headline {
+  color: #6d5736;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.worker-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.worker-card {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(142, 110, 61, 0.14);
+  background: #fffaf1;
+  display: grid;
+  gap: 6px;
+}
+
+.worker-title {
+  color: #5b4727;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.worker-copy {
+  color: #4f4332;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.worker-copy-idle {
+  color: #7e7058;
 }
 
 .log {
@@ -124,4 +170,10 @@ body {
 
 .log-entry-error {
   color: #9a3030;
+}
+
+@media (max-width: 960px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

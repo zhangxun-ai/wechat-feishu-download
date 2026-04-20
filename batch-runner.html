@@ -29,6 +29,18 @@
             <span class="stat-label">失败</span>
             <span id="jobFailure" class="stat-value">0</span>
           </div>
+          <div class="stat-card">
+            <span class="stat-label">通道</span>
+            <span id="jobWorkers" class="stat-value">-</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">耗时</span>
+            <span id="jobElapsed" class="stat-value">00:00</span>
+          </div>
+        </div>
+        <div id="workerPanel" class="worker-panel" hidden>
+          <div class="panel-headline">并行通道</div>
+          <div id="workerGrid" class="worker-grid"></div>
         </div>
         <div id="jobLog" class="log" aria-live="polite"></div>
       </section>
@@ -36,6 +48,7 @@
 
     <script src="shared/export-url-utils.js"></script>
     <script src="shared/course-export-builders.js"></script>
+    <script src="shared/course-export-runtime.js"></script>
     <script src="wechat-markdown-cleanup.js"></script>
     <script src="wechat-direct-export.js"></script>
     <script type="module" src="batch-runner.js"></script>
