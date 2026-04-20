@@ -61,13 +61,14 @@ async function init() {
   }
 
   activeTabId = tab.id;
+  const canExportCourse = Boolean(tab.url && isScysCourseUrl(tab.url));
   setCourseExportAvailability(false, false);
 
   if (tab.url && isWechatArticleUrl(tab.url)) {
     helperSeedUrlInput.value = tab.url;
   }
 
-  if (tab.url && isScysCourseUrl(tab.url)) {
+  if (canExportCourse) {
     setCourseExportAvailability(true, false);
   }
 
@@ -92,14 +93,17 @@ async function init() {
       if (!pageInfo?.supports || !pageInfo.supports.includes("markdown")) {
         setStatus("检测到当前页面还在运行旧版脚本，请刷新页面后再试。", "error");
         setButtonsDisabled(true);
+        setCourseExportAvailability(canExportCourse, false);
       } else {
         setStatus("页面已就绪，可以直接导出。", "ready");
         setButtonsDisabled(false);
+        setCourseExportAvailability(canExportCourse, canExportCourse);
       }
     } catch (error) {
       setPageMeta(null);
       setStatus(error.message || "页面检测失败", "error");
       setButtonsDisabled(true);
+      setCourseExportAvailability(canExportCourse, false);
     }
   }
 
@@ -198,7 +202,7 @@ async function handleCourseExport() {
   } catch (error) {
     setStatus(error.message || "专栏导出初始化失败", "error");
   } finally {
-    setCourseExportAvailability(true, false);
+    setCourseExportAvailability(true, true);
   }
 }
 

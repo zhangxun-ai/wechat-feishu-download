@@ -3,7 +3,9 @@ const INTER_TASK_DELAY_MS = 1200;
 const MAX_RETRIES = 2;
 const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
+const courseExportBuilders = globalThis.CourseExportBuilders || {};
 const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
+const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || false;
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
@@ -36,126 +38,232 @@ async function init() {
     throw new Error("任务不存在或已失效");
   }
 
-  titleEl.textContent = job.title || "批量下载任务";
+  const totalCount = getJobTotal(job);
+  titleEl.textContent = job.title || (job.type === "course-export" ? "专栏导出任务" : "批量下载任务");
   metaEl.textContent = buildMeta(job);
-  setStatus(`任务已加载，共 ${job.links.length} 篇，开始下载。`, "loading");
-  updateStats(0, 0, 0, job.links.length);
+  setStatus(`任务已加载，共 ${totalCount} ${getJobUnitLabel(job)}，开始处理。`, "loading");
+  updateStats(0, 0, 0, totalCount);
 
+  try {
+    if (job.type === "course-export") {
+      await runCourseExportJob(job);
+    } else {
+      await runLinkBatchJob(job);
+    }
+  } finally {
+    await removeJob(jobId);
+  }
+}
+
+async function runLinkBatchJob(job) {
   const zipOutput = job.zipOutput !== false;
   const zipBuilder = zipOutput ? new SimpleZipBuilder() : null;
   const usedNames = new Set();
   const exportedEntries = [];
   const failedEntries = [];
-
+  const totalCount = getJobTotal(job);
   let successCount = 0;
   let failureCount = 0;
 
-  try {
-    for (let index = 0; index < job.links.length; index += 1) {
-      const link = job.links[index];
-      updateStats(index, successCount, failureCount, job.links.length);
-      setStatus(`正在处理 ${index + 1}/${job.links.length}`, "loading");
-      appendLog(`开始处理 ${index + 1}/${job.links.length}: ${link}`);
+  for (let index = 0; index < job.links.length; index += 1) {
+    const link = job.links[index];
+    updateStats(index, successCount, failureCount, totalCount);
+    setStatus(`正在处理 ${index + 1}/${totalCount} 篇`, "loading");
+    appendLog(`开始处理 ${index + 1}/${totalCount}: ${link}`);
 
-      try {
-        const rawResult = await exportLinkWithRetry(link, {
-          format: "markdown",
-          includeImages: job.includeImages !== false
-        });
-        const result = normalizeWechatMarkdownResult(rawResult);
+    try {
+      const rawResult = await exportLinkWithRetry(link, {
+        format: "markdown",
+        includeImages: job.includeImages !== false
+      });
+      const result = normalizeWechatMarkdownResult(rawResult);
 
-        if (zipBuilder) {
-          const entryName = uniquifyZipEntryName(result.filename, usedNames);
-          zipBuilder.addText(entryName, result.content);
-          exportedEntries.push({
-            url: link,
-            filename: entryName
-          });
-          appendLog(`已加入 ZIP: ${entryName}`, "success");
-        } else {
-          await downloadExportResult(result);
-          exportedEntries.push({
-            url: link,
-            filename: result.filename
-          });
-          appendLog(`已下载: ${result.filename}`, "success");
-        }
-
-        successCount += 1;
-      } catch (error) {
-        failureCount += 1;
-        failedEntries.push({
+      if (zipBuilder) {
+        const entryName = uniquifyZipEntryName(result.filename, usedNames);
+        zipBuilder.addText(entryName, result.content);
+        exportedEntries.push({
           url: link,
-          message: error.message || "未知错误"
+          filename: entryName
         });
-        appendLog(`失败: ${link} | ${error.message || "未知错误"}`, "error");
-      }
-
-      await sleep(INTER_TASK_DELAY_MS);
-    }
-
-    if (zipBuilder && successCount > 0) {
-      setStatus(`正在打包 ZIP，共 ${successCount} 篇。`, "loading");
-      const manifestContent = JSON.stringify(
-        {
-          title: job.title,
-          source: job.source,
-          includeImages: job.includeImages !== false,
-          zipOutput: true,
-          account: job.account || null,
-          dateRange: job.dateRange || null,
-          successCount,
-          failureCount,
-          exportedEntries,
-          failedEntries,
-          createdAt: job.createdAt,
-          exportedAt: new Date().toISOString()
-        },
-        null,
-        2
-      );
-      zipBuilder.addText("manifest.json", manifestContent);
-      zipBuilder.addText(
-        "articles.txt",
-        exportedEntries.length > 0
-          ? exportedEntries.map((entry) => `${entry.filename}\t${entry.url}`).join("\n")
-          : "本次没有成功导出的文章。"
-      );
-      if (failedEntries.length > 0) {
-        zipBuilder.addText(
-          "failed.txt",
-          failedEntries.map((entry) => `${entry.url}\t${entry.message}`).join("\n")
-        );
-      }
-      const zipBlob = zipBuilder.buildBlob();
-      const zipUrl = URL.createObjectURL(zipBlob);
-      const zipFilename = buildZipFilename(job.title || "批量下载任务");
-
-      try {
-        await downloadFile({
-          url: zipUrl,
-          filename: zipFilename,
-          saveAs: false,
-          conflictAction: "uniquify"
+        appendLog(`已加入 ZIP: ${entryName}`, "success");
+      } else {
+        await downloadExportResult(result);
+        exportedEntries.push({
+          url: link,
+          filename: result.filename
         });
-        appendLog(`ZIP 已生成: ${zipFilename}`, "success");
-      } finally {
-        setTimeout(() => URL.revokeObjectURL(zipUrl), 1000);
+        appendLog(`已下载: ${result.filename}`, "success");
       }
+
+      successCount += 1;
+    } catch (error) {
+      failureCount += 1;
+      failedEntries.push({
+        url: link,
+        message: error.message || "未知错误"
+      });
+      appendLog(`失败: ${link} | ${error.message || "未知错误"}`, "error");
     }
 
-    updateStats(job.links.length, successCount, failureCount, job.links.length);
-
-    if (failureCount === 0) {
-      setStatus(zipOutput ? `下载完成，并已打包 ZIP，共 ${successCount} 篇。` : `下载完成，共 ${successCount} 篇。`, "ready");
-    } else if (successCount > 0) {
-      setStatus(`下载完成，成功 ${successCount} 篇，失败 ${failureCount} 篇。`, "error");
-    } else {
-      setStatus(`下载失败，共 ${failureCount} 篇。`, "error");
-    }
-  } finally {
-    await removeJob(jobId);
+    await sleep(INTER_TASK_DELAY_MS);
   }
+
+  if (zipBuilder && successCount > 0) {
+    setStatus(`正在打包 ZIP，共 ${successCount} 篇。`, "loading");
+    const manifestContent = JSON.stringify(
+      {
+        title: job.title,
+        source: job.source,
+        includeImages: job.includeImages !== false,
+        zipOutput: true,
+        account: job.account || null,
+        dateRange: job.dateRange || null,
+        successCount,
+        failureCount,
+        exportedEntries,
+        failedEntries,
+        createdAt: job.createdAt,
+        exportedAt: new Date().toISOString()
+      },
+      null,
+      2
+    );
+    zipBuilder.addText("manifest.json", manifestContent);
+    zipBuilder.addText(
+      "articles.txt",
+      exportedEntries.length > 0
+        ? exportedEntries.map((entry) => `${entry.filename}\t${entry.url}`).join("\n")
+        : "本次没有成功导出的文章。"
+    );
+    if (failedEntries.length > 0) {
+      zipBuilder.addText(
+        "failed.txt",
+        failedEntries.map((entry) => `${entry.url}\t${entry.message}`).join("\n")
+      );
+    }
+    const zipBlob = zipBuilder.buildBlob();
+    const zipUrl = URL.createObjectURL(zipBlob);
+    const zipFilename = buildZipFilename(job.title || "批量下载任务");
+
+    try {
+      await downloadFile({
+        url: zipUrl,
+        filename: zipFilename,
+        saveAs: false,
+        conflictAction: "uniquify"
+      });
+      appendLog(`ZIP 已生成: ${zipFilename}`, "success");
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(zipUrl), 1000);
+    }
+  }
+
+  updateStats(totalCount, successCount, failureCount, totalCount);
+
+  if (failureCount === 0) {
+    setStatus(zipOutput ? `下载完成，并已打包 ZIP，共 ${successCount} 篇。` : `下载完成，共 ${successCount} 篇。`, "ready");
+  } else if (successCount > 0) {
+    setStatus(`下载完成，成功 ${successCount} 篇，失败 ${failureCount} 篇。`, "error");
+  } else {
+    setStatus(`下载失败，共 ${failureCount} 篇。`, "error");
+  }
+}
+
+async function runCourseExportJob(job) {
+  if (typeof courseExportBuilders.buildCourseMarkdownDocument !== "function"
+    || typeof courseExportBuilders.buildCourseHtmlDocument !== "function"
+    || typeof courseExportBuilders.buildCourseFilename !== "function") {
+    throw new Error("专栏导出构建器未加载");
+  }
+
+  const totalCount = getJobTotal(job);
+  const exportedChapters = [];
+  const failedChapters = [];
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (let index = 0; index < job.chapters.length; index += 1) {
+    const chapter = job.chapters[index];
+    updateStats(index, successCount, failureCount, totalCount);
+    setStatus(`正在处理 ${index + 1}/${totalCount} 章`, "loading");
+    appendLog(`开始处理 ${index + 1}/${totalCount}: ${chapter.title}`);
+
+    try {
+      const rawResult = await exportLinkWithRetry(chapter.url, {
+        format: "markdown",
+        includeImages: job.includeImages !== false
+      });
+      const result = normalizeWechatMarkdownResult(rawResult);
+      exportedChapters.push({
+        order: chapter.order,
+        title: chapter.title,
+        url: chapter.url,
+        markdown: String(result.content || "").trim()
+      });
+      successCount += 1;
+      appendLog(`已提取: ${chapter.title}`, "success");
+    } catch (error) {
+      failureCount += 1;
+      failedChapters.push({
+        title: chapter.title,
+        url: chapter.url,
+        message: error.message || "未知错误"
+      });
+      appendLog(`失败: ${chapter.title} | ${error.message || "未知错误"}`, "error");
+    }
+
+    await sleep(INTER_TASK_DELAY_MS);
+  }
+
+  updateStats(totalCount, successCount, failureCount, totalCount);
+
+  if (successCount === 0) {
+    setStatus(`专栏导出失败，共 ${failureCount} 章。`, "error");
+    return;
+  }
+
+  setStatus("正在生成 Markdown 和 HTML 文件…", "loading");
+  const exportedAt = new Date().toISOString();
+  const title = String(job.courseTitle || job.title || "未命名专栏");
+  const markdown = courseExportBuilders.buildCourseMarkdownDocument({
+    title,
+    sourceUrl: job.courseUrl,
+    exportedAt,
+    chapters: exportedChapters,
+    failedChapters
+  });
+  const html = courseExportBuilders.buildCourseHtmlDocument({
+    title,
+    sourceUrl: job.courseUrl,
+    exportedAt,
+    chapters: exportedChapters,
+    failedChapters
+  });
+
+  const markdownFilename = courseExportBuilders.buildCourseFilename(title, "md");
+  const htmlFilename = courseExportBuilders.buildCourseFilename(title, "html");
+
+  await downloadGeneratedText(markdown, "text/markdown;charset=utf-8", markdownFilename, buildFallbackFilenameForExtension("md"));
+  appendLog(`已下载: ${markdownFilename}`, "success");
+  await downloadGeneratedText(html, "text/html;charset=utf-8", htmlFilename, buildFallbackFilenameForExtension("html"));
+  appendLog(`已下载: ${htmlFilename}`, "success");
+
+  if (failureCount === 0) {
+    setStatus(`专栏导出完成，已生成 Markdown 和 HTML，共 ${successCount} 章。`, "ready");
+  } else {
+    setStatus(`专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章。`, "error");
+  }
+}
+
+function getJobTotal(job) {
+  if (job.type === "course-export") {
+    return Array.isArray(job.chapters) ? job.chapters.length : 0;
+  }
+  return Array.isArray(job.links) ? job.links.length : 0;
+}
+
+function getJobUnitLabel(job) {
+  return job.type === "course-export" ? "章" : "篇";
 }
 
 async function exportLinkWithRetry(url, options) {
@@ -354,7 +462,7 @@ function injectContentScript(tabId) {
     chrome.scripting.executeScript(
       {
         target: { tabId },
-        files: ["content-scripts/feishu-exporter.js"]
+        files: ["shared/scys-course-utils.js", "content-scripts/feishu-exporter.js"]
       },
       () => {
         if (chrome.runtime.lastError) {
@@ -438,7 +546,7 @@ function isTabReadyForExport(tab, sourceUrl) {
   if (currentUrl === sourceUrl) {
     return true;
   }
-  return isBatchExportUrl(currentUrl);
+  return isBatchExportUrl(currentUrl) || isSingleExportUrl(currentUrl);
 }
 
 function closeTab(tabId) {
@@ -497,6 +605,32 @@ async function downloadWithFallback(url, filename, format) {
   }
 }
 
+async function downloadGeneratedText(content, mimeType, filename, fallbackFilename) {
+  const blob = new Blob([content], { type: mimeType });
+  const objectUrl = URL.createObjectURL(blob);
+
+  try {
+    return await downloadFile({
+      url: objectUrl,
+      filename,
+      saveAs: false,
+      conflictAction: "uniquify"
+    });
+  } catch (error) {
+    if (!String(error?.message || "").toLowerCase().includes("invalid filename")) {
+      throw error;
+    }
+    return downloadFile({
+      url: objectUrl,
+      filename: fallbackFilename,
+      saveAs: false,
+      conflictAction: "uniquify"
+    });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+}
+
 function normalizeDownloadFilename(filename, format) {
   const extension = format === "json" ? "json" : "md";
   const raw = String(filename || "");
@@ -518,6 +652,10 @@ function normalizeDownloadFilename(filename, format) {
 
 function buildFallbackFilename(format) {
   const extension = format === "json" ? "json" : "md";
+  return buildFallbackFilenameForExtension(extension);
+}
+
+function buildFallbackFilenameForExtension(extension) {
   const now = new Date();
   const timestamp = [
     now.getFullYear(),
@@ -570,6 +708,17 @@ function removeJob(jobId) {
 }
 
 function buildMeta(job) {
+  if (job.type === "course-export") {
+    return [
+      `共 ${getJobTotal(job)} 章`,
+      job.courseTitle || "当前专栏",
+      job.includeImages === false ? "不带图" : "带图",
+      "单文件 Markdown",
+      "单文件 HTML",
+      "串行稳态模式"
+    ].join(" | ");
+  }
+
   const pieces = [`共 ${job.links.length} 篇`];
   if (job.source === "wechat-history" && job.account?.nickname) {
     pieces.push(`公众号 ${job.account.nickname}`);
