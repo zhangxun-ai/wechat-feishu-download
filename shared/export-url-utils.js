@@ -49,6 +49,15 @@
     }
   }
 
+  function isScysCourseUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return isScysCourseParsedUrl(parsed);
+    } catch (error) {
+      return false;
+    }
+  }
+
   function isFeishuExportUrl(parsed) {
     return /(^|\.)((feishu\.cn)|(larksuite\.com)|(larkoffice\.com))$/.test(parsed.hostname)
       && /^\/(docx|wiki)\//.test(parsed.pathname);
@@ -62,12 +71,19 @@
     return parsed.hostname === "mp.weixin.qq.com" && /^\/cgi-bin\//.test(parsed.pathname);
   }
 
+  function isScysCourseParsedUrl(parsed) {
+    return parsed.hostname === "scys.com"
+      && /^\/deepsea\/\d+\/course\/\d+/.test(parsed.pathname)
+      && parsed.searchParams.has("chapterId");
+  }
+
   const api = {
     classifyExportUrl,
     isSingleExportUrl,
     isBatchExportUrl,
     isWechatArticleUrl,
-    isWechatMpBackendUrl
+    isWechatMpBackendUrl,
+    isScysCourseUrl
   };
 
   globalScope.ExportUrlUtils = api;

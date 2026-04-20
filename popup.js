@@ -6,6 +6,7 @@ const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || fa
 const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const isWechatMpBackendUrl = (url) => exportUrlUtils.isWechatMpBackendUrl?.(url) || false;
+const isScysCourseUrl = (url) => exportUrlUtils.isScysCourseUrl?.(url) || false;
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
   const cleaned = typeof externalCleaner === "function" ? externalCleaner(value) : value;
@@ -16,6 +17,7 @@ const statusEl = document.getElementById("status");
 const titleEl = document.getElementById("docTitle");
 const typeEl = document.getElementById("docType");
 const exportMarkdownButton = document.getElementById("exportMarkdown");
+const exportCourseButton = document.getElementById("exportCourse");
 const includeImagesInput = document.getElementById("includeImages");
 const includeImagesHelperInput = document.getElementById("includeImagesHelper");
 const batchZipOutputInput = document.getElementById("batchZipOutput");
@@ -58,9 +60,14 @@ async function init() {
   }
 
   activeTabId = tab.id;
+  setCourseExportAvailability(false, false);
 
   if (tab.url && isWechatArticleUrl(tab.url)) {
     helperSeedUrlInput.value = tab.url;
+  }
+
+  if (tab.url && isScysCourseUrl(tab.url)) {
+    setCourseExportAvailability(true, false);
   }
 
   if (tab.url && isWechatMpBackendUrl(tab.url)) {
@@ -499,6 +506,11 @@ async function downloadWithFallback(url, filename, format, saveAs) {
 
 function setButtonsDisabled(disabled) {
   exportMarkdownButton.disabled = disabled;
+}
+
+function setCourseExportAvailability(visible, enabled) {
+  exportCourseButton.hidden = !visible;
+  exportCourseButton.disabled = !enabled;
 }
 
 function setBatchControlsDisabled(disabled) {
