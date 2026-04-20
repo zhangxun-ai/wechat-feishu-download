@@ -6,13 +6,18 @@ const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
 const courseExportBuilders = globalThis.CourseExportBuilders || {};
 const courseExportRuntime = globalThis.CourseExportRuntime || {};
+const obsidianExportApi = globalThis.ObsidianExport || {};
+const obsidianVaultStorage = globalThis.ObsidianVaultStorage || {};
 const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
 const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || false;
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const extractCourseChapterMarkdown = (value) => courseExportBuilders.extractCourseChapterMarkdown?.(value) || String(value || "").trim();
 const getCourseChapterMarkdownError = (value, sourceUrl) => courseExportBuilders.getCourseChapterMarkdownError?.(value, sourceUrl) || "";
 const formatElapsedDuration = (value) => courseExportRuntime.formatElapsedDuration?.(value) || "00:00";
+const getCourseExportExecutionProfileForTotal = (totalCount) => courseExportRuntime.getCourseExportExecutionProfile?.(totalCount) || null;
 const getCourseExportWorkerCountForTotal = (totalCount) => courseExportRuntime.getCourseExportWorkerCount?.(totalCount) || 1;
+const buildObsidianNoteFile = (payload) => obsidianExportApi.buildObsidianNoteFile?.(payload);
+const buildObsidianCourseBundle = (payload) => obsidianExportApi.buildObsidianCourseBundle?.(payload);
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
   const cleaned = typeof externalCleaner === "function" ? externalCleaner(value) : value;
@@ -94,6 +99,14 @@ async function runLinkBatchJob(job) {
         includeImages: job.includeImages !== false
       });
       const result = normalizeWechatMarkdownResult(rawResult);
+
+       if (job.saveToObsidian) {
+        try {
+          await writeSingleNoteToObsidian(link, result);
+        } catch (error) {
+          appendLog(`写入 Obsidian 失败：${error.message || "未知错误"}`, "error");
+        }
+      }
 
       if (zipBuilder) {
         const entryName = uniquifyZipEntryName(result.filename, usedNames);
@@ -194,18 +207,21 @@ async function runCourseExportJob(job) {
   }
 
   const totalCount = getJobTotal(job);
-  const workerCount = getCourseExportWorkerCount(job);
+  const executionProfile = getCourseExportExecutionProfile(job);
+  const workerCount = executionProfile.workerCount;
   const exportedChapters = new Array(totalCount);
   const failedChapters = [];
   let completedCount = 0;
   let nextIndex = 0;
   let successCount = 0;
   let failureCount = 0;
+  let consecutiveFailures = 0;
+  let slowdownMultiplier = 1;
 
   setWorkerCount(workerCount);
   initializeWorkerPanel(workerCount);
 
-  setStatus(`正在处理专栏，使用 ${workerCount} 个通道。`, "loading");
+  setStatus(`正在处理专栏，使用 ${workerCount} 个通道（${executionProfile.label}）。`, "loading");
 
   await Promise.all(
     Array.from({ length: workerCount }, (_, workerIndex) => runCourseExportWorker(workerIndex))
@@ -246,19 +262,36 @@ async function runCourseExportJob(job) {
   await downloadGeneratedText(html, "text/html;charset=utf-8", htmlFilename, buildFallbackFilenameForExtension("html"));
   appendLog(`已下载: ${htmlFilename}`, "success");
 
+  let obsidianOutcome = "";
+  if (job.saveToObsidian) {
+    try {
+      const writeMessage = await writeCourseBundleToObsidian({
+        title,
+        sourceUrl: job.courseUrl,
+        exportedAt,
+        chapters: exportedChapters.filter(Boolean),
+        failedChapters
+      });
+      obsidianOutcome = writeMessage ? `，${writeMessage}` : "";
+    } catch (error) {
+      appendLog(`写入 Obsidian 失败：${error.message || "未知错误"}`, "error");
+      obsidianOutcome = "，但写入 Obsidian 失败";
+    }
+  }
+
   const elapsed = formatElapsedDuration(Date.now() - jobStartedAt);
   if (failureCount === 0) {
-    setStatus(`专栏导出完成，已生成 Markdown 和 HTML，共 ${successCount} 章，总耗时 ${elapsed}。`, "ready");
+    setStatus(`专栏导出完成，已生成 Markdown 和 HTML${obsidianOutcome}，共 ${successCount} 章，总耗时 ${elapsed}。`, "ready");
     appendLog(`任务结束，总耗时 ${elapsed}。`, "success");
   } else {
-    setStatus(`专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章，总耗时 ${elapsed}。`, "error");
+    setStatus(`专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章${obsidianOutcome}，总耗时 ${elapsed}。`, "error");
     appendLog(`任务结束，总耗时 ${elapsed}。`, "error");
   }
 
   async function runCourseExportWorker(workerIndex) {
     let tabId = null;
 
-    await sleep(workerIndex * COURSE_EXPORT_WORKER_STAGGER_MS);
+    await sleep(workerIndex * executionProfile.workerStaggerMs);
 
     try {
       tabId = await createTab("about:blank", false);
@@ -266,6 +299,7 @@ async function runCourseExportJob(job) {
       while (true) {
         const index = nextIndex;
         if (index >= job.chapters.length) {
+          setWorkerState(workerIndex, "空闲", "等待其他通道完成");
           return;
         }
         nextIndex += 1;
@@ -277,7 +311,13 @@ async function runCourseExportJob(job) {
         try {
           const rawResult = await exportLinkInExistingTabWithRetry(tabId, chapter.url, {
             format: "markdown",
-            includeImages: job.includeImages !== false
+            includeImages: job.includeImages !== false,
+            settleDelayMs: executionProfile.settleDelayMs
+          }, {
+            maxRetries: executionProfile.maxRetries,
+            retryBaseDelayMs: executionProfile.retryBaseDelayMs,
+            retrySettleDelayMs: executionProfile.retrySettleDelayMs,
+            slowdownMultiplier
           });
           const result = normalizeWechatMarkdownResult(rawResult);
           const markdown = extractCourseChapterMarkdown(result.content);
@@ -296,10 +336,17 @@ async function runCourseExportJob(job) {
             markdown
           };
           successCount += 1;
+          consecutiveFailures = 0;
+          slowdownMultiplier = Math.max(1, slowdownMultiplier - 0.15);
           setWorkerState(workerIndex, `已完成 ${index + 1}/${totalCount}`, chapter.title);
           appendLog(`已提取: ${chapter.title}`, "success");
         } catch (error) {
           failureCount += 1;
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 2) {
+            slowdownMultiplier = Math.min(4, slowdownMultiplier + 0.5);
+            appendLog(`检测到连续失败，当前专栏自动放慢到 ${slowdownMultiplier.toFixed(1)}x 节奏。`, "error");
+          }
           failedChapters.push({
             title: chapter.title,
             url: chapter.url,
@@ -312,11 +359,15 @@ async function runCourseExportJob(job) {
         completedCount += 1;
         updateStats(completedCount, successCount, failureCount, totalCount);
         if (completedCount < totalCount) {
-          setStatus(`正在处理专栏，已完成 ${completedCount}/${totalCount} 章。`, "loading");
+          setStatus(`正在处理专栏，已完成 ${completedCount}/${totalCount} 章（${executionProfile.label}）。`, "loading");
+        } else {
+          setWorkerState(workerIndex, "收尾中", "等待汇总输出");
         }
-        await sleep(INTER_TASK_DELAY_MS + (workerIndex * 180));
+        const interTaskDelayMs = Math.round((executionProfile.interTaskDelayMs + (workerIndex * 40)) * slowdownMultiplier);
+        if (interTaskDelayMs > 0) {
+          await sleep(interTaskDelayMs);
+        }
       }
-      setWorkerState(workerIndex, "空闲", "等待其他通道完成");
     } finally {
       if (tabId !== null) {
         await closeTab(tabId);
@@ -325,9 +376,29 @@ async function runCourseExportJob(job) {
   }
 }
 
-function getCourseExportWorkerCount(job) {
+function getCourseExportExecutionProfile(job) {
   const totalCount = getJobTotal(job);
-  return getCourseExportWorkerCountForTotal(totalCount);
+  const profile = getCourseExportExecutionProfileForTotal(totalCount);
+  if (profile) {
+    return profile;
+  }
+
+  return {
+    mode: "browser-fast",
+    label: "浏览器加速模式",
+    workerCount: getCourseExportWorkerCountForTotal(totalCount),
+    settleDelayMs: 0,
+    skipInitialSettle: true,
+    interTaskDelayMs: 120,
+    workerStaggerMs: 180,
+    maxRetries: MAX_RETRIES,
+    retryBaseDelayMs: 1200,
+    retrySettleDelayMs: 900
+  };
+}
+
+function getCourseExportWorkerCount(job) {
+  return getCourseExportExecutionProfile(job).workerCount;
 }
 
 function getJobTotal(job) {
@@ -364,21 +435,31 @@ async function exportLinkWithRetry(url, options) {
   throw lastError || new Error("导出失败");
 }
 
-async function exportLinkInExistingTabWithRetry(tabId, url, options) {
+async function exportLinkInExistingTabWithRetry(tabId, url, options, retryOptions = {}) {
   let lastError = null;
+  const maxRetries = Number.isFinite(retryOptions.maxRetries) ? retryOptions.maxRetries : MAX_RETRIES;
+  const retryBaseDelayMs = Number(retryOptions.retryBaseDelayMs) || 1500;
+  const retrySettleDelayMs = Number(retryOptions.retrySettleDelayMs) || BACKGROUND_TAB_SETTLE_DELAY_MS;
+  const slowdownMultiplier = Math.max(1, Number(retryOptions.slowdownMultiplier) || 1);
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       if (attempt > 0) {
-        appendLog(`重试 ${attempt}/${MAX_RETRIES}: ${url}`);
+        appendLog(`重试 ${attempt}/${maxRetries}: ${url}`);
       }
-      return await exportLinkInExistingTab(tabId, url, options);
+      const settleDelayMs = attempt > 0
+        ? Math.round(retrySettleDelayMs * attempt * slowdownMultiplier)
+        : Number(options?.settleDelayMs) || 0;
+      return await exportLinkInExistingTab(tabId, url, {
+        ...options,
+        settleDelayMs
+      });
     } catch (error) {
       lastError = error;
-      if (attempt >= MAX_RETRIES) {
+      if (attempt >= maxRetries) {
         break;
       }
-      const delay = (attempt + 1) * 1500;
+      const delay = Math.round((attempt + 1) * retryBaseDelayMs * slowdownMultiplier);
       appendLog(`本次失败，将在 ${delay}ms 后重试。`, "error");
       await sleep(delay);
     }
@@ -432,7 +513,7 @@ async function exportLinkInBackground(url, options) {
 }
 
 async function exportLinkInExistingTab(tabId, url, options) {
-  await prepareTabForUrl(tabId, url);
+  await prepareTabForUrl(tabId, url, { settleDelayMs: options?.settleDelayMs });
   const payload = await sendMessageWithRecovery(tabId, {
     type: "feishu-export:export-document",
     format: options.format,
@@ -448,7 +529,7 @@ async function exportLinkInExistingTab(tabId, url, options) {
   };
 }
 
-async function prepareTabForUrl(tabId, url) {
+async function prepareTabForUrl(tabId, url, options = {}) {
   const tab = await getTab(tabId);
   if (String(tab?.url || "") === url) {
     await reloadTab(tabId);
@@ -456,7 +537,10 @@ async function prepareTabForUrl(tabId, url) {
     await updateTabUrl(tabId, url);
   }
   await waitForTabReady(tabId, url);
-  await sleep(BACKGROUND_TAB_SETTLE_DELAY_MS);
+  const settleDelayMs = Math.max(0, Number(options?.settleDelayMs) || 0);
+  if (settleDelayMs > 0) {
+    await sleep(settleDelayMs);
+  }
 }
 
 async function exportWechatArticleByHtmlFetch(url, options) {
@@ -793,6 +877,62 @@ async function downloadGeneratedText(content, mimeType, filename, fallbackFilena
   }
 }
 
+async function writeCourseBundleToObsidian(payload) {
+  if (typeof buildObsidianCourseBundle !== "function") {
+    throw new Error("Obsidian 导出模块未加载");
+  }
+
+  const binding = await obsidianVaultStorage.getVaultBinding?.();
+  if (!binding?.handle) {
+    throw new Error("未配置 Obsidian 目标目录");
+  }
+
+  const permission = await obsidianVaultStorage.queryVaultPermission?.(binding.handle, "readwrite");
+  if (permission !== "granted") {
+    throw new Error("Obsidian 目标目录权限已失效，请回到弹窗重新授权");
+  }
+
+  const bundle = buildObsidianCourseBundle(payload);
+  await obsidianVaultStorage.writeTextFiles?.(binding.handle, bundle.files);
+  appendLog(`已写入 Obsidian：${bundle.indexPath}`, "success");
+  return "并已写入 Obsidian";
+}
+
+async function writeSingleNoteToObsidian(sourceUrl, result) {
+  if (typeof buildObsidianNoteFile !== "function") {
+    throw new Error("Obsidian 导出模块未加载");
+  }
+
+  const binding = await obsidianVaultStorage.getVaultBinding?.();
+  if (!binding?.handle) {
+    throw new Error("未配置 Obsidian 目标目录");
+  }
+
+  const permission = await obsidianVaultStorage.queryVaultPermission?.(binding.handle, "readwrite");
+  if (permission !== "granted") {
+    throw new Error("Obsidian 目标目录权限已失效，请回到弹窗重新授权");
+  }
+
+  const title = String(result?.filename || "未命名文档").replace(/\.md$/i, "");
+  const note = buildObsidianNoteFile({
+    title,
+    sourceUrl,
+    exportedAt: new Date().toISOString(),
+    markdown: extractDocumentBodyMarkdown(result?.content)
+  });
+  await obsidianVaultStorage.writeTextFiles?.(binding.handle, [note]);
+  appendLog(`已写入 Obsidian：${note.path}`, "success");
+}
+
+function extractDocumentBodyMarkdown(markdown) {
+  const text = String(markdown || "").trim();
+  const separatorIndex = text.indexOf("\n---\n");
+  if (separatorIndex < 0) {
+    return text;
+  }
+  return text.slice(separatorIndex + "\n---\n".length).trim();
+}
+
 function normalizeDownloadFilename(filename, format) {
   const extension = format === "json" ? "json" : "md";
   const raw = String(filename || "");
@@ -871,14 +1011,15 @@ function removeJob(jobId) {
 
 function buildMeta(job) {
   if (job.type === "course-export") {
-    const workerCount = getCourseExportWorkerCount(job);
+    const profile = getCourseExportExecutionProfile(job);
     return [
       `共 ${getJobTotal(job)} 章`,
       job.courseTitle || "当前专栏",
       job.includeImages === false ? "不带图" : "带图",
       "单文件 Markdown",
       "单文件 HTML",
-      workerCount > 1 ? `${workerCount} 通道并行稳态模式` : "单通道稳态模式"
+      job.saveToObsidian ? "同步 Obsidian" : "仅下载",
+      profile.workerCount > 1 ? `${profile.workerCount} 通道${profile.label}` : `单通道${profile.label}`
     ].join(" | ");
   }
 
@@ -891,6 +1032,7 @@ function buildMeta(job) {
   }
   pieces.push(job.includeImages === false ? "不带图" : "带图");
   pieces.push(job.zipOutput === false ? "逐篇下载" : "ZIP 打包");
+  pieces.push(job.saveToObsidian ? "同步 Obsidian" : "仅下载");
   pieces.push("串行稳态模式");
   pieces.push("公众号直抓优先");
   return pieces.join(" | ");

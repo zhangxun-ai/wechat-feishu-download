@@ -44,6 +44,37 @@
 
       <section class="panel">
         <div class="panel-head">
+          <h2>Obsidian</h2>
+          <p class="subtitle-inline">首次选择一次 Vault 内目标文件夹，之后导出时可自动同步 Markdown。</p>
+        </div>
+
+        <div id="obsidianStatus" class="status status-loading">正在检测 Obsidian 目标目录…</div>
+
+        <div class="meta">
+          <div class="meta-row">
+            <span class="meta-label">目标目录</span>
+            <span id="obsidianFolder" class="meta-value">-</span>
+          </div>
+        </div>
+
+        <label class="toggle" for="saveToObsidian">
+          <input id="saveToObsidian" type="checkbox">
+          <span class="toggle-copy">
+            <span class="toggle-title">导出完成后同步到 Obsidian</span>
+            <span class="toggle-desc">保留原有下载，同时把 Markdown 写入你选定的 Obsidian 目录。</span>
+          </span>
+        </label>
+
+        <div class="actions">
+          <button id="pickObsidianFolder" class="button">选择目标目录</button>
+          <button id="clearObsidianFolder" class="button">清除授权</button>
+        </div>
+
+        <p class="hint hint-tight">请选择 Obsidian Vault 内的目标文件夹。课程专栏会拆成索引页和分章节笔记，单篇导出会按日期落到单独目录。</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
           <h2>批量下载</h2>
           <p class="subtitle-inline">点击后会打开任务页，批量下载会在任务页继续执行。</p>
         </div>
@@ -120,6 +151,8 @@
     </main>
 
     <script src="shared/export-url-utils.js"></script>
+    <script src="shared/obsidian-export.js"></script>
+    <script src="shared/obsidian-vault-storage.js"></script>
     <script src="wechat-markdown-cleanup.js"></script>
     <script type="module" src="popup.js"></script>
   </body>

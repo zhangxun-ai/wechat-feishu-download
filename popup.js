@@ -2,11 +2,14 @@ const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
 const DEFAULT_HISTORY_RANGE_DAYS = 30;
 const WECHAT_MP_LOGIN_URL = "https://mp.weixin.qq.com/";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
+const obsidianExportApi = globalThis.ObsidianExport || {};
+const obsidianVaultStorage = globalThis.ObsidianVaultStorage || {};
 const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || false;
 const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const isWechatMpBackendUrl = (url) => exportUrlUtils.isWechatMpBackendUrl?.(url) || false;
 const isScysCourseUrl = (url) => exportUrlUtils.isScysCourseUrl?.(url) || false;
+const buildObsidianNoteFile = (payload) => obsidianExportApi.buildObsidianNoteFile?.(payload);
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
   const cleaned = typeof externalCleaner === "function" ? externalCleaner(value) : value;
@@ -19,6 +22,11 @@ const typeEl = document.getElementById("docType");
 const exportMarkdownButton = document.getElementById("exportMarkdown");
 const exportCourseButton = document.getElementById("exportCourse");
 const includeImagesInput = document.getElementById("includeImages");
+const obsidianStatusEl = document.getElementById("obsidianStatus");
+const obsidianFolderEl = document.getElementById("obsidianFolder");
+const saveToObsidianInput = document.getElementById("saveToObsidian");
+const pickObsidianFolderButton = document.getElementById("pickObsidianFolder");
+const clearObsidianFolderButton = document.getElementById("clearObsidianFolder");
 const includeImagesHelperInput = document.getElementById("includeImagesHelper");
 const batchZipOutputInput = document.getElementById("batchZipOutput");
 const batchStatusEl = document.getElementById("batchStatus");
@@ -37,6 +45,8 @@ const helperLogEl = document.getElementById("helperLog");
 let activeTabId = null;
 let pageInfo = null;
 let isWechatHistoryRunning = false;
+let obsidianBinding = null;
+let obsidianSyncEnabled = false;
 
 init().catch((error) => {
   setStatus(error.message || "初始化失败", "error");
@@ -50,10 +60,15 @@ openWechatMpLoginButton.addEventListener("click", handleOpenWechatMpLogin);
 helperDownloadButton.addEventListener("click", handleWechatHistoryDownload);
 includeImagesInput.addEventListener("change", () => syncIncludeImages(true));
 includeImagesHelperInput.addEventListener("change", () => syncIncludeImages(false));
+pickObsidianFolderButton.addEventListener("click", handlePickObsidianFolder);
+clearObsidianFolderButton.addEventListener("click", handleClearObsidianFolder);
+saveToObsidianInput.addEventListener("change", handleSaveToObsidianToggle);
 
 async function init() {
   initializeHistoryDateRange();
   syncIncludeImages(true);
+  await loadObsidianPreferences();
+  await refreshObsidianBinding({ silent: true });
 
   const [tab] = await queryActiveTab();
   if (!tab?.id) {
@@ -120,6 +135,13 @@ async function handleExport(format) {
     return;
   }
 
+  if (format === "markdown") {
+    const vaultReady = await ensureObsidianReadyIfNeeded();
+    if (!vaultReady) {
+      return;
+    }
+  }
+
   setButtonsDisabled(true);
   setStatus(`正在导出 ${format.toUpperCase()}…`, "loading");
 
@@ -143,7 +165,17 @@ async function handleExport(format) {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
-    setStatus(`${format.toUpperCase()} 已生成，浏览器将开始下载。`, "ready");
+    let obsidianMessage = "";
+    if (format === "markdown" && obsidianSyncEnabled) {
+      await saveCurrentMarkdownToObsidian({
+        title: pageInfo?.title || filename.replace(/\.md$/i, ""),
+        sourceUrl: activeTabId ? String((await queryActiveTab())[0]?.url || "") : "",
+        markdown: normalizedPayload.content
+      });
+      obsidianMessage = "，并已写入 Obsidian";
+    }
+
+    setStatus(`${format.toUpperCase()} 已生成，浏览器将开始下载${obsidianMessage}。`, "ready");
   } catch (error) {
     if (format === "markdown" && error.message === "不支持的导出格式") {
       setStatus("当前页面还在运行旧版脚本，请刷新页面后再试。", "error");
@@ -160,6 +192,11 @@ async function handleBatchDownloadLinks() {
     return;
   }
 
+  const vaultReady = await ensureObsidianReadyIfNeeded();
+  if (!vaultReady) {
+    return;
+  }
+
   const links = parseBatchLinks(batchLinksInput.value);
   if (links.length === 0) {
     setBatchStatus("请至少粘贴一个受支持的文章链接。", "error");
@@ -170,6 +207,7 @@ async function handleBatchDownloadLinks() {
     const job = await createStoredBatchJob(links, {
       includeImages: includeImagesInput.checked,
       zipOutput: batchZipOutputInput.checked,
+      saveToObsidian: obsidianSyncEnabled,
       title: "批量下载链接列表",
       source: "manual-links"
     });
@@ -187,6 +225,11 @@ async function handleCourseExport() {
     return;
   }
 
+  const vaultReady = await ensureObsidianReadyIfNeeded();
+  if (!vaultReady) {
+    return;
+  }
+
   setCourseExportAvailability(true, false);
   setStatus("正在识别当前专栏目录…", "loading");
 
@@ -195,7 +238,8 @@ async function handleCourseExport() {
       type: "feishu-export:get-scys-course-outline"
     });
     const job = await createStoredCourseExportJob(outline, {
-      includeImages: includeImagesInput.checked
+      includeImages: includeImagesInput.checked,
+      saveToObsidian: obsidianSyncEnabled
     });
     await openBatchRunner(job.id);
     setStatus(`已创建专栏导出任务，共 ${job.chapters.length} 章。任务将在新页面中继续。`, "ready");
@@ -209,6 +253,11 @@ async function handleCourseExport() {
 async function handleWechatHistoryDownload() {
   if (isWechatHistoryRunning) {
     setHelperStatus("当前还有进行中的批量任务，请等待完成后再试。", "error");
+    return;
+  }
+
+  const vaultReady = await ensureObsidianReadyIfNeeded();
+  if (!vaultReady) {
     return;
   }
 
@@ -267,6 +316,7 @@ async function handleWechatHistoryDownload() {
     const job = await createStoredBatchJob(links, {
       includeImages: includeImagesInput.checked,
       zipOutput: batchZipOutputInput.checked,
+      saveToObsidian: obsidianSyncEnabled,
       title: `公众号历史下载 - ${formatWechatAccountLabel(result.matchedAccount)}`,
       source: "wechat-history",
       account: result.matchedAccount || null,
@@ -472,6 +522,7 @@ async function createStoredBatchJob(links, options = {}) {
     source: String(options.source || "manual"),
     includeImages: options.includeImages !== false,
     zipOutput: options.zipOutput !== false,
+    saveToObsidian: options.saveToObsidian === true,
     links: normalizedLinks,
     account: options.account || null,
     dateRange: options.dateRange || null,
@@ -498,6 +549,7 @@ async function createStoredCourseExportJob(outline, options = {}) {
     courseTitle: title,
     courseUrl: String(outline?.courseUrl || ""),
     includeImages: options.includeImages !== false,
+    saveToObsidian: options.saveToObsidian === true,
     chapters,
     createdAt: new Date().toISOString()
   };
@@ -532,6 +584,18 @@ function storageSet(items) {
         return;
       }
       resolve();
+    });
+  });
+}
+
+function storageGet(keys) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(keys, (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(result || {});
     });
   });
 }
@@ -602,6 +666,11 @@ function setHelperStatus(message, variant) {
   helperStatusEl.className = `status status-${variant}`;
 }
 
+function setObsidianStatus(message, variant) {
+  obsidianStatusEl.textContent = message;
+  obsidianStatusEl.className = `status status-${variant}`;
+}
+
 function appendBatchLog(message, variant = "") {
   const entry = document.createElement("div");
   entry.className = `log-entry${variant ? ` log-entry-${variant}` : ""}`;
@@ -622,6 +691,142 @@ function clearBatchLog() {
 
 function clearHelperLog() {
   helperLogEl.innerHTML = "";
+}
+
+async function loadObsidianPreferences() {
+  const result = await storageGet(["obsidianSyncEnabled"]);
+  obsidianSyncEnabled = result.obsidianSyncEnabled === true;
+  saveToObsidianInput.checked = obsidianSyncEnabled;
+}
+
+async function refreshObsidianBinding({ silent = false } = {}) {
+  if (!obsidianVaultStorage.isSupported?.()) {
+    obsidianBinding = null;
+    saveToObsidianInput.checked = false;
+    saveToObsidianInput.disabled = true;
+    pickObsidianFolderButton.disabled = true;
+    clearObsidianFolderButton.disabled = true;
+    obsidianFolderEl.textContent = "当前环境不支持";
+    setObsidianStatus("当前浏览器环境不支持目录授权，无法直写 Obsidian。", "error");
+    return null;
+  }
+
+  const binding = await obsidianVaultStorage.getVaultBinding?.();
+  obsidianBinding = binding || null;
+  clearObsidianFolderButton.disabled = !binding;
+  saveToObsidianInput.disabled = false;
+  pickObsidianFolderButton.disabled = false;
+
+  if (!binding) {
+    obsidianFolderEl.textContent = "-";
+    setObsidianStatus("尚未配置 Obsidian 目标目录。", silent ? "loading" : "error");
+    return null;
+  }
+
+  const folderName = String(binding.meta?.folderName || binding.handle?.name || "未命名目录");
+  const permission = await obsidianVaultStorage.queryVaultPermission?.(binding.handle, "readwrite");
+  obsidianFolderEl.textContent = folderName;
+
+  if (permission === "granted") {
+    setObsidianStatus(`已连接到目标目录：${folderName}。`, "ready");
+  } else {
+    setObsidianStatus(`目录权限已失效：${folderName}。请重新授权。`, "error");
+  }
+
+  return {
+    ...binding,
+    permission
+  };
+}
+
+async function handlePickObsidianFolder() {
+  try {
+    const handle = await obsidianVaultStorage.pickDirectory?.();
+    await obsidianVaultStorage.saveVaultBinding?.(handle, {
+      folderName: String(handle?.name || "未命名目录")
+    });
+    await refreshObsidianBinding();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      return;
+    }
+    setObsidianStatus(error.message || "选择 Obsidian 目录失败", "error");
+  }
+}
+
+async function handleClearObsidianFolder() {
+  try {
+    await obsidianVaultStorage.clearVaultBinding?.();
+    obsidianBinding = null;
+    obsidianSyncEnabled = false;
+    saveToObsidianInput.checked = false;
+    await storageSet({ obsidianSyncEnabled: false });
+    obsidianFolderEl.textContent = "-";
+    setObsidianStatus("已清除 Obsidian 目录授权。", "ready");
+    clearObsidianFolderButton.disabled = true;
+  } catch (error) {
+    setObsidianStatus(error.message || "清除 Obsidian 授权失败", "error");
+  }
+}
+
+async function handleSaveToObsidianToggle() {
+  obsidianSyncEnabled = saveToObsidianInput.checked;
+  await storageSet({ obsidianSyncEnabled });
+
+  if (!obsidianSyncEnabled) {
+    return;
+  }
+
+  const ready = await ensureObsidianReadyIfNeeded();
+  if (!ready) {
+    saveToObsidianInput.checked = false;
+    obsidianSyncEnabled = false;
+    await storageSet({ obsidianSyncEnabled: false });
+  }
+}
+
+async function ensureObsidianReadyIfNeeded() {
+  if (!obsidianSyncEnabled) {
+    return true;
+  }
+
+  const binding = await refreshObsidianBinding({ silent: true });
+  if (!binding || binding.permission !== "granted") {
+    setStatus("已启用 Obsidian 同步，但当前没有可写目录。请先在弹窗里重新授权。", "error");
+    return false;
+  }
+
+  return true;
+}
+
+async function saveCurrentMarkdownToObsidian(payload) {
+  const binding = await refreshObsidianBinding({ silent: true });
+  if (!binding || binding.permission !== "granted") {
+    throw new Error("Obsidian 目录不可用，请先重新授权");
+  }
+
+  const note = buildObsidianNoteFile?.({
+    title: payload.title,
+    sourceUrl: payload.sourceUrl,
+    exportedAt: new Date().toISOString(),
+    markdown: extractBodyMarkdown(payload.markdown)
+  });
+
+  if (!note) {
+    throw new Error("Obsidian 导出模块未加载");
+  }
+
+  await obsidianVaultStorage.writeTextFiles?.(binding.handle, [note]);
+  setObsidianStatus(`已写入 Obsidian：${note.path}`, "ready");
+}
+
+function extractBodyMarkdown(markdown) {
+  const text = String(markdown || "");
+  const separatorIndex = text.indexOf("\n---\n");
+  if (separatorIndex < 0) {
+    return text.trim();
+  }
+  return text.slice(separatorIndex + "\n---\n".length).trim();
 }
 
 function normalizeWechatMarkdownPayload(payload) {

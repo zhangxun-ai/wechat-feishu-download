@@ -1,4 +1,16 @@
 (function (globalScope) {
+  const FAST_BROWSER_PROFILE = {
+    mode: "browser-fast",
+    label: "浏览器加速模式",
+    settleDelayMs: 0,
+    skipInitialSettle: true,
+    interTaskDelayMs: 120,
+    workerStaggerMs: 180,
+    maxRetries: 2,
+    retryBaseDelayMs: 1200,
+    retrySettleDelayMs: 900
+  };
+
   function formatElapsedDuration(value) {
     const totalSeconds = Math.max(0, Math.floor(Number(value) / 1000) || 0);
     const seconds = totalSeconds % 60;
@@ -13,19 +25,43 @@
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
 
-  function getCourseExportWorkerCount(totalCount) {
+  function getCourseExportExecutionProfile(totalCount) {
     const count = Math.max(0, Number(totalCount) || 0);
+
+    if (count <= 0) {
+      return {
+        ...FAST_BROWSER_PROFILE,
+        workerCount: 1
+      };
+    }
+
     if (count < 12) {
-      return 1;
+      return {
+        ...FAST_BROWSER_PROFILE,
+        workerCount: 2
+      };
     }
-    if (count < 48) {
-      return 2;
+
+    if (count < 60) {
+      return {
+        ...FAST_BROWSER_PROFILE,
+        workerCount: 4
+      };
     }
-    return 3;
+
+    return {
+      ...FAST_BROWSER_PROFILE,
+      workerCount: 5
+    };
+  }
+
+  function getCourseExportWorkerCount(totalCount) {
+    return getCourseExportExecutionProfile(totalCount).workerCount;
   }
 
   const api = {
     formatElapsedDuration,
+    getCourseExportExecutionProfile,
     getCourseExportWorkerCount
   };
 

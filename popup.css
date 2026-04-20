@@ -207,6 +207,10 @@ body {
   margin-top: 10px;
 }
 
+.button-subtle {
+  background: rgba(255, 249, 239, 0.92);
+}
+
 .field-group {
   margin-top: 14px;
   display: grid;
