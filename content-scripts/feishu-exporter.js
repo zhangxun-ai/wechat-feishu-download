@@ -79,6 +79,11 @@
     "rowspan"
   ]);
   const INVISIBLE_TEXT_RE = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+  const SCYS_LOAD_MORE_MARKERS = [
+    "向上滚动加载更多内容",
+    "继续滚动加载更多内容",
+    "加载中..."
+  ];
   const EXPORT_SKIP_SELECTOR = [
     ".catalogue-container",
     ".catalogue",
@@ -242,6 +247,16 @@
       };
     }
 
+    if (isScysCoursePage()) {
+      const meta = getScysCourseChapterMeta();
+
+      return {
+        title: meta.title,
+        docType: meta.pageType,
+        supports: ["markdown", "json"]
+      };
+    }
+
     if (isGenericWebPage()) {
       const meta = getGenericWebMeta();
 
@@ -268,6 +283,10 @@
       return exportWechatDocument(format, options);
     }
 
+    if (isScysCoursePage()) {
+      return exportScysCourseDocument(format, options);
+    }
+
     if (isGenericWebPage()) {
       return exportGenericWebDocument(format, options);
     }
@@ -280,8 +299,13 @@
       throw new Error("当前页面不是生财课程章节页");
     }
 
-    const entries = extractScysCourseEntriesFromStructuredState();
-    const fallbackEntries = entries.length > 0 ? entries : extractScysCourseEntriesFromDom();
+    const sidebarEntries = extractScysCourseEntriesFromSidebar();
+    const structuredEntries = sidebarEntries.length > 0 ? [] : extractScysCourseEntriesFromStructuredState();
+    const fallbackEntries = sidebarEntries.length > 0
+      ? sidebarEntries
+      : structuredEntries.length > 0
+        ? structuredEntries
+        : extractScysCourseEntriesFromDom();
     const chapters = normalizeScysCourseEntries(fallbackEntries, location.href);
 
     if (chapters.length === 0) {
@@ -292,6 +316,51 @@
       courseTitle: getScysCourseTitle(),
       courseUrl: location.href,
       chapters
+    };
+  }
+
+  async function exportScysCourseDocument(format, options) {
+    const meta = getScysCourseChapterMeta();
+    const liveRoot = getScysCourseExportRoot();
+    const rawHtml = liveRoot.innerHTML;
+    const clonedRoot = liveRoot.cloneNode(true);
+
+    sanitizeScysCourseArticle(clonedRoot, { includeImages: options.includeImages !== false });
+    let markdownBody = cleanupMarkdown(convertBlock(clonedRoot, 0));
+    if (options.includeImages === false) {
+      markdownBody = stripMarkdownImages(markdownBody);
+    }
+    markdownBody = stripScysCourseNoiseFromMarkdown(markdownBody);
+
+    if (!markdownBody) {
+      throw new Error("未提取到课程正文");
+    }
+
+    if (containsScysCourseNoise(markdownBody)) {
+      throw new Error("章节正文仍包含页面加载噪音");
+    }
+
+    if (format === "markdown") {
+      return {
+        filename: buildFilename(meta.title, "md"),
+        mimeType: "text/markdown;charset=utf-8",
+        content: buildMarkdownDocument(meta, markdownBody)
+      };
+    }
+
+    return {
+      filename: buildFilename(meta.title, "json"),
+      mimeType: "application/json;charset=utf-8",
+      content: JSON.stringify({
+        meta: {
+          title: meta.title,
+          pageType: meta.pageType,
+          sourceUrl: location.href,
+          exportedAt: new Date().toISOString()
+        },
+        articleHtml: rawHtml,
+        cleanedHtml: clonedRoot.innerHTML
+      }, null, 2)
     };
   }
 
@@ -459,6 +528,106 @@
     );
   }
 
+  function getScysCourseChapterMeta() {
+    const chapterId = getCurrentScysChapterId();
+    const title = cleanupInline(
+      getCurrentScysChapterHeading()?.textContent
+      || document.getElementById(`sidebar-level3-${chapterId}`)?.textContent
+      || extractVisibleTitle()
+      || document.title
+    ) || getScysCourseTitle() || "未命名章节";
+
+    return {
+      pageType: "生财课程章节",
+      exportType: "scys-course",
+      title,
+      author: "",
+      publishTime: ""
+    };
+  }
+
+  function getCurrentScysChapterId() {
+    try {
+      const chapterId = new URL(location.href).searchParams.get("chapterId") || "";
+      return /^\d+$/.test(chapterId) ? chapterId : "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function getCurrentScysChapterHeading() {
+    const chapterId = getCurrentScysChapterId();
+    if (!chapterId) {
+      return null;
+    }
+
+    return document.getElementById(`chapter-title-${chapterId}`);
+  }
+
+  function getScysCourseExportRoot() {
+    const heading = getCurrentScysChapterHeading();
+    if (!heading) {
+      throw new Error("未定位到当前章节标题");
+    }
+
+    const section = heading.closest(".level3-section") || heading.parentElement;
+    if (!section) {
+      throw new Error("未定位到当前章节容器");
+    }
+
+    return section.querySelector(".document-container") || section.querySelector(".feishu-doc-content") || section;
+  }
+
+  function extractScysCourseEntriesFromSidebar() {
+    const sidebarRoot = getScysSidebarRoot();
+    if (!sidebarRoot) {
+      return [];
+    }
+
+    const level3Nodes = Array.from(sidebarRoot.querySelectorAll('[id^="sidebar-level3-"]'));
+    if (level3Nodes.length > 0) {
+      return level3Nodes.map((node) => ({
+        chapterId: getScysChapterIdFromNode(node),
+        title: cleanupInline(node.getAttribute("title") || node.textContent || "")
+      }));
+    }
+
+    return Array.from(sidebarRoot.querySelectorAll('a[href*="chapterId="]')).map((node) => ({
+      chapterId: getScysChapterIdFromNode(node),
+      title: cleanupInline(node.getAttribute("title") || node.textContent || "")
+    }));
+  }
+
+  function getScysSidebarRoot() {
+    return document.querySelector(".course-sidebar")
+      || document.querySelector("aside.sidebar")
+      || document.querySelector("aside");
+  }
+
+  function getScysChapterIdFromNode(node) {
+    const nodeId = String(node?.id || "");
+    const nodeIdMatch = nodeId.match(/sidebar-level3-(\d+)/);
+    if (nodeIdMatch) {
+      return nodeIdMatch[1];
+    }
+
+    const dataChapterId = String(node?.getAttribute?.("data-chapter-id") || "").trim();
+    if (/^\d+$/.test(dataChapterId)) {
+      return dataChapterId;
+    }
+
+    const href = node?.getAttribute?.("href");
+    if (!href) {
+      return "";
+    }
+
+    try {
+      return new URL(href, location.href).searchParams.get("chapterId") || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
   function extractScysCourseEntriesFromStructuredState() {
     const roots = [
       globalThis.__NUXT__,
@@ -580,6 +749,30 @@
     }
 
     return entries;
+  }
+
+  function sanitizeScysCourseArticle(root, options) {
+    sanitizeGenericArticle(root, options);
+
+    for (const node of Array.from(root.querySelectorAll("*"))) {
+      const text = cleanupInline(node.textContent || "");
+      if (SCYS_LOAD_MORE_MARKERS.includes(text)) {
+        node.remove();
+      }
+    }
+
+    cleanupEmptyGenericNodes(root);
+  }
+
+  function stripScysCourseNoiseFromMarkdown(value) {
+    const lines = String(value || "").split(/\r?\n/);
+    return cleanupMarkdown(
+      lines.filter((line) => !SCYS_LOAD_MORE_MARKERS.includes(cleanupInline(line || ""))).join("\n")
+    );
+  }
+
+  function containsScysCourseNoise(value) {
+    return SCYS_LOAD_MORE_MARKERS.some((marker) => String(value || "").includes(marker));
   }
 
   async function exportGenericWebDocument(format, options) {

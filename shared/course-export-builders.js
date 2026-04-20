@@ -1,4 +1,11 @@
 (function (globalScope) {
+  const EXPORT_METADATA_LINE_RE = /^- (?:页面类型|来源|作者|发布时间|导出时间):/u;
+  const SCYS_NOISE_MARKERS = [
+    "向上滚动加载更多内容",
+    "继续滚动加载更多内容",
+    "加载中..."
+  ];
+
   function buildCourseMarkdownDocument(payload) {
     const chapters = Array.isArray(payload?.chapters) ? payload.chapters : [];
     const failedChapters = Array.isArray(payload?.failedChapters) ? payload.failedChapters : [];
@@ -143,6 +150,40 @@
     return `${base}.${extension}`;
   }
 
+  function extractCourseChapterMarkdown(markdown) {
+    const text = normalizeCourseMarkdownText(markdown);
+    if (!text) {
+      return "";
+    }
+
+    const separatorIndex = text.indexOf("\n---\n");
+    if (separatorIndex < 0) {
+      return text;
+    }
+
+    const preamble = text.slice(0, separatorIndex).trim();
+    const body = text.slice(separatorIndex + "\n---\n".length).trim();
+
+    if (!body || !looksLikeWrappedExportMarkdown(preamble)) {
+      return text;
+    }
+
+    return body;
+  }
+
+  function getCourseChapterMarkdownError(markdown, sourceUrl) {
+    const body = extractCourseChapterMarkdown(markdown);
+    if (!body) {
+      return "未提取到章节正文";
+    }
+
+    if (isScysCourseUrl(sourceUrl) && SCYS_NOISE_MARKERS.some((marker) => body.includes(marker))) {
+      return "章节正文仍包含页面加载噪音";
+    }
+
+    return "";
+  }
+
   function slugifyHeading(text) {
     return String(text || "")
       .trim()
@@ -224,11 +265,43 @@
     return escapeHtml(value).replace(/"/g, "&quot;");
   }
 
+  function looksLikeWrappedExportMarkdown(preamble) {
+    const lines = normalizeCourseMarkdownText(preamble)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length < 3 || !/^#\s+\S/u.test(lines[0])) {
+      return false;
+    }
+
+    return lines.slice(1).every((line) => EXPORT_METADATA_LINE_RE.test(line));
+  }
+
+  function isScysCourseUrl(value) {
+    try {
+      const parsed = new URL(String(value || ""));
+      return parsed.hostname === "scys.com"
+        && /^\/deepsea\/\d+\/course\/\d+/.test(parsed.pathname)
+        && parsed.searchParams.has("chapterId");
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function normalizeCourseMarkdownText(value) {
+    return String(value || "")
+      .replace(/\r\n?/g, "\n")
+      .trim();
+  }
+
   const api = {
     slugifyHeading,
     buildCourseMarkdownDocument,
     buildCourseHtmlDocument,
-    buildCourseFilename
+    buildCourseFilename,
+    extractCourseChapterMarkdown,
+    getCourseChapterMarkdownError
   };
 
   globalScope.CourseExportBuilders = api;

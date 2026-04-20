@@ -1,7 +1,9 @@
 const assert = require("node:assert/strict");
 const {
   buildCourseMarkdownDocument,
-  buildCourseHtmlDocument
+  buildCourseHtmlDocument,
+  extractCourseChapterMarkdown,
+  getCourseChapterMarkdownError
 } = require("../shared/course-export-builders.js");
 
 function test(name, fn) {
@@ -48,4 +50,56 @@ test("builds a standalone html reader with nav links and failure panel", () => {
   assert.match(html, /href="#前言"/);
   assert.match(html, /<section id="前言"/);
   assert.match(html, /失败章节/);
+});
+
+test("extracts body from wrapped single-page markdown before merge", () => {
+  const wrappedMarkdown = [
+    "# 生财有术",
+    "",
+    "- 页面类型: 网页文章",
+    "- 来源: https://scys.com/deepsea/2001/course/164?chapterId=10899",
+    "- 导出时间: 4/20/2026, 8:00:00 PM",
+    "",
+    "---",
+    "",
+    "6. 看看效果",
+    "",
+    "做完上面六步，试一下：",
+    "",
+    "1. 让纸片人男友生成一张图片。"
+  ].join("\n");
+
+  assert.equal(
+    extractCourseChapterMarkdown(wrappedMarkdown),
+    [
+      "6. 看看效果",
+      "",
+      "做完上面六步，试一下：",
+      "",
+      "1. 让纸片人男友生成一张图片。"
+    ].join("\n")
+  );
+});
+
+test("marks scys markdown with load-more noise as invalid", () => {
+  const wrappedMarkdown = [
+    "# 生财有术",
+    "",
+    "- 页面类型: 网页文章",
+    "- 来源: https://scys.com/deepsea/2001/course/164?chapterId=10899",
+    "- 导出时间: 4/20/2026, 8:00:00 PM",
+    "",
+    "---",
+    "",
+    "向上滚动加载更多内容",
+    "",
+    "6. 看看效果",
+    "",
+    "继续滚动加载更多内容"
+  ].join("\n");
+
+  assert.equal(
+    getCourseChapterMarkdownError(wrappedMarkdown, "https://scys.com/deepsea/2001/course/164?chapterId=10899"),
+    "章节正文仍包含页面加载噪音"
+  );
 });

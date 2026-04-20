@@ -7,6 +7,8 @@ const courseExportBuilders = globalThis.CourseExportBuilders || {};
 const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
 const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || false;
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
+const extractCourseChapterMarkdown = (value) => courseExportBuilders.extractCourseChapterMarkdown?.(value) || String(value || "").trim();
+const getCourseChapterMarkdownError = (value, sourceUrl) => courseExportBuilders.getCourseChapterMarkdownError?.(value, sourceUrl) || "";
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
   const externalCleaner = globalThis.WechatMarkdownCleanup?.maybeStripWechatUiNoiseFromMarkdown;
   const cleaned = typeof externalCleaner === "function" ? externalCleaner(value) : value;
@@ -194,11 +196,16 @@ async function runCourseExportJob(job) {
         includeImages: job.includeImages !== false
       });
       const result = normalizeWechatMarkdownResult(rawResult);
+      const markdown = extractCourseChapterMarkdown(result.content);
+      const markdownError = getCourseChapterMarkdownError(markdown, chapter.url);
+      if (markdownError) {
+        throw new Error(markdownError);
+      }
       exportedChapters.push({
         order: chapter.order,
         title: chapter.title,
         url: chapter.url,
-        markdown: String(result.content || "").trim()
+        markdown
       });
       successCount += 1;
       appendLog(`已提取: ${chapter.title}`, "success");
