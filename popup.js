@@ -742,6 +742,10 @@ async function refreshObsidianBinding({ silent = false } = {}) {
 async function handlePickObsidianFolder() {
   try {
     const handle = await obsidianVaultStorage.pickDirectory?.();
+    const permission = await obsidianVaultStorage.ensureVaultPermission?.(handle, "readwrite");
+    if (permission !== "granted") {
+      throw new Error("没有拿到 Obsidian 目录写入权限");
+    }
     await obsidianVaultStorage.saveVaultBinding?.(handle, {
       folderName: String(handle?.name || "未命名目录")
     });
@@ -791,7 +795,18 @@ async function ensureObsidianReadyIfNeeded() {
   }
 
   const binding = await refreshObsidianBinding({ silent: true });
-  if (!binding || binding.permission !== "granted") {
+  if (!binding) {
+    setStatus("已启用 Obsidian 同步，但当前没有可写目录。请先在弹窗里重新授权。", "error");
+    return false;
+  }
+
+  let permission = binding.permission;
+  if (permission !== "granted") {
+    permission = await obsidianVaultStorage.ensureVaultPermission?.(binding.handle, "readwrite");
+    await refreshObsidianBinding({ silent: true });
+  }
+
+  if (permission !== "granted") {
     setStatus("已启用 Obsidian 同步，但当前没有可写目录。请先在弹窗里重新授权。", "error");
     return false;
   }

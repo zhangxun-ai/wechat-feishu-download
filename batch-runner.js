@@ -27,6 +27,9 @@ const maybeStripWechatUiNoiseFromMarkdown = (value) => {
 const titleEl = document.getElementById("jobTitle");
 const metaEl = document.getElementById("jobMeta");
 const statusEl = document.getElementById("jobStatus");
+const obsidianRetryPanelEl = document.getElementById("obsidianRetryPanel");
+const obsidianRetryCopyEl = document.getElementById("obsidianRetryCopy");
+const retryObsidianWriteButton = document.getElementById("retryObsidianWrite");
 const progressEl = document.getElementById("jobProgress");
 const successEl = document.getElementById("jobSuccess");
 const failureEl = document.getElementById("jobFailure");
@@ -39,6 +42,9 @@ let wechatDirectFetchEnabled = true;
 let jobStartedAt = Date.now();
 let elapsedTimerId = 0;
 let workerStates = [];
+let pendingObsidianRetry = null;
+
+retryObsidianWriteButton?.addEventListener("click", handleRetryObsidianWrite);
 
 init().catch((error) => {
   setStatus(error.message || "任务初始化失败", "error");
@@ -264,18 +270,27 @@ async function runCourseExportJob(job) {
 
   let obsidianOutcome = "";
   if (job.saveToObsidian) {
+    const obsidianPayload = {
+      title,
+      sourceUrl: job.courseUrl,
+      exportedAt,
+      chapters: exportedChapters.filter(Boolean),
+      failedChapters
+    };
     try {
-      const writeMessage = await writeCourseBundleToObsidian({
-        title,
-        sourceUrl: job.courseUrl,
-        exportedAt,
-        chapters: exportedChapters.filter(Boolean),
-        failedChapters
-      });
+      const writeMessage = await writeCourseBundleToObsidian(obsidianPayload);
       obsidianOutcome = writeMessage ? `，${writeMessage}` : "";
     } catch (error) {
       appendLog(`写入 Obsidian 失败：${error.message || "未知错误"}`, "error");
       obsidianOutcome = "，但写入 Obsidian 失败";
+      if (isObsidianPermissionRetryable(error)) {
+        setPendingObsidianRetry({
+          kind: "course-bundle",
+          payload: obsidianPayload,
+          successVariant: failureCount === 0 ? "ready" : "error"
+        }, "当前任务文件已经导出完成，但写入 Obsidian 时浏览器没有给出可复用的写权限。点击下面的按钮后，可在本页重新授权并补写，无需重跑整次导出。");
+        appendLog("已保留 Obsidian 写入内容，可在当前页面点击“授权并重试写入 Obsidian”。", "error");
+      }
     }
   }
 
@@ -887,9 +902,9 @@ async function writeCourseBundleToObsidian(payload) {
     throw new Error("未配置 Obsidian 目标目录");
   }
 
-  const permission = await obsidianVaultStorage.queryVaultPermission?.(binding.handle, "readwrite");
+  const permission = await obsidianVaultStorage.ensureVaultPermission?.(binding.handle, "readwrite");
   if (permission !== "granted") {
-    throw new Error("Obsidian 目标目录权限已失效，请回到弹窗重新授权");
+    throw buildObsidianPermissionError();
   }
 
   const bundle = buildObsidianCourseBundle(payload);
@@ -908,9 +923,9 @@ async function writeSingleNoteToObsidian(sourceUrl, result) {
     throw new Error("未配置 Obsidian 目标目录");
   }
 
-  const permission = await obsidianVaultStorage.queryVaultPermission?.(binding.handle, "readwrite");
+  const permission = await obsidianVaultStorage.ensureVaultPermission?.(binding.handle, "readwrite");
   if (permission !== "granted") {
-    throw new Error("Obsidian 目标目录权限已失效，请回到弹窗重新授权");
+    throw buildObsidianPermissionError();
   }
 
   const title = String(result?.filename || "未命名文档").replace(/\.md$/i, "");
@@ -931,6 +946,16 @@ function extractDocumentBodyMarkdown(markdown) {
     return text;
   }
   return text.slice(separatorIndex + "\n---\n".length).trim();
+}
+
+function buildObsidianPermissionError() {
+  return new Error("Obsidian 目标目录当前不可写，请在当前页面点击“授权并重试写入 Obsidian”，或回到弹窗重新授权。");
+}
+
+function isObsidianPermissionRetryable(error) {
+  const message = String(error?.message || "");
+  return /Obsidian 目标目录/u.test(message)
+    && /(权限|不可写|重新授权)/u.test(message);
 }
 
 function normalizeDownloadFilename(filename, format) {
@@ -1070,6 +1095,57 @@ function initializeWorkerPanel(workerCount) {
     detail: "尚未开始"
   }));
   renderWorkerPanel();
+}
+
+function setPendingObsidianRetry(retryState, copy) {
+  pendingObsidianRetry = retryState || null;
+  if (!obsidianRetryPanelEl || !obsidianRetryCopyEl || !retryObsidianWriteButton) {
+    return;
+  }
+
+  if (!pendingObsidianRetry) {
+    obsidianRetryPanelEl.hidden = true;
+    obsidianRetryCopyEl.textContent = "";
+    retryObsidianWriteButton.disabled = false;
+    retryObsidianWriteButton.textContent = "授权并重试写入 Obsidian";
+    return;
+  }
+
+  obsidianRetryCopyEl.textContent = copy || "当前任务已导出完成，但写入 Obsidian 失败。";
+  obsidianRetryPanelEl.hidden = false;
+  retryObsidianWriteButton.disabled = false;
+  retryObsidianWriteButton.textContent = "授权并重试写入 Obsidian";
+}
+
+async function handleRetryObsidianWrite() {
+  if (!pendingObsidianRetry || !retryObsidianWriteButton) {
+    return;
+  }
+
+  const retryState = pendingObsidianRetry;
+  retryObsidianWriteButton.disabled = true;
+  retryObsidianWriteButton.textContent = "正在授权并重试…";
+  setStatus("正在重新授权并写入 Obsidian…", "loading");
+  appendLog("开始重新授权 Obsidian 目录并补写导出文件。");
+
+  try {
+    switch (retryState.kind) {
+      case "course-bundle":
+        await writeCourseBundleToObsidian(retryState.payload);
+        break;
+      default:
+        throw new Error("当前任务类型暂不支持 Obsidian 重试");
+    }
+
+    setPendingObsidianRetry(null);
+    setStatus("Obsidian 补写成功，无需重新导出。", retryState.successVariant || "ready");
+    appendLog("Obsidian 补写成功，无需重新导出。", "success");
+  } catch (error) {
+    retryObsidianWriteButton.disabled = false;
+    retryObsidianWriteButton.textContent = "授权并重试写入 Obsidian";
+    appendLog(`Obsidian 重试失败：${error.message || "未知错误"}`, "error");
+    setStatus(error.message || "Obsidian 重试失败", "error");
+  }
 }
 
 function setWorkerState(workerIndex, status, detail) {

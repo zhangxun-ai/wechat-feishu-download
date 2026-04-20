@@ -64,14 +64,35 @@
     }
   }
 
+  async function requestVaultPermission(handle, mode = "readwrite") {
+    if (!handle?.requestPermission) {
+      return "prompt";
+    }
+
+    try {
+      return await handle.requestPermission({ mode });
+    } catch (error) {
+      return "denied";
+    }
+  }
+
+  async function ensureVaultPermission(handle, mode = "readwrite") {
+    const current = await queryVaultPermission(handle, mode);
+    if (current === "granted") {
+      return "granted";
+    }
+
+    return requestVaultPermission(handle, mode);
+  }
+
   async function writeTextFiles(handle, files) {
     if (!handle) {
       throw new Error("未配置 Obsidian 目标目录");
     }
 
-    const permission = await queryVaultPermission(handle, "readwrite");
+    const permission = await ensureVaultPermission(handle, "readwrite");
     if (permission !== "granted") {
-      throw new Error("Obsidian 目标目录权限已失效，请先在弹窗里重新授权");
+      throw new Error("Obsidian 目标目录当前不可写，请重新授权后再试");
     }
 
     for (const file of files || []) {
@@ -180,6 +201,8 @@
     getVaultBinding,
     clearVaultBinding,
     queryVaultPermission,
+    requestVaultPermission,
+    ensureVaultPermission,
     writeTextFiles
   };
 

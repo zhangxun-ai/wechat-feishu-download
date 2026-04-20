@@ -71,6 +71,42 @@ body {
   color: #8d2323;
 }
 
+.retry-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(198, 110, 15, 0.18);
+  background: rgba(255, 244, 224, 0.92);
+}
+
+.retry-copy {
+  margin: 8px 0 0;
+  color: #6d5736;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.retry-actions {
+  margin-top: 12px;
+}
+
+.retry-button {
+  appearance: none;
+  border: 1px solid #b36b10;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #d98616 0%, #c66e0f 100%);
+  color: #fff8ef;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px 14px;
+}
+
+.retry-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .stats {
   margin-top: 14px;
   display: grid;
