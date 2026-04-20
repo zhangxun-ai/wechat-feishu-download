@@ -17,9 +17,9 @@ function test(name, fn) {
 test("normalizes raw scys course entries into ordered chapters", () => {
   const baseUrl = "https://scys.com/deepsea/2001/course/164?chapterId=11093";
   const result = normalizeScysCourseEntries([
-    { title: "前言", chapterId: "11093" },
+    { title: "前言", chapterId: "11093", sectionTitle: "十二、数据库进阶", sectionId: "10837", sectionOrder: 1 },
     { title: "分组标题", chapterId: "" },
-    { title: "MCP 里有三个角色，你需要知道", chapterId: "11098" }
+    { title: "MCP 里有三个角色，你需要知道", chapterId: "11098", sectionTitle: "十三、MCP", sectionId: "10850", sectionOrder: 2 }
   ], baseUrl);
 
   assert.deepEqual(result, [
@@ -27,13 +27,19 @@ test("normalizes raw scys course entries into ordered chapters", () => {
       order: 1,
       title: "前言",
       chapterId: "11093",
-      url: buildScysChapterUrl(baseUrl, "11093")
+      url: buildScysChapterUrl(baseUrl, "11093"),
+      sectionTitle: "十二、数据库进阶",
+      sectionId: "10837",
+      sectionOrder: 1
     },
     {
       order: 2,
       title: "MCP 里有三个角色，你需要知道",
       chapterId: "11098",
-      url: buildScysChapterUrl(baseUrl, "11098")
+      url: buildScysChapterUrl(baseUrl, "11098"),
+      sectionTitle: "十三、MCP",
+      sectionId: "10850",
+      sectionOrder: 2
     }
   ]);
 });

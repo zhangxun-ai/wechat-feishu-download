@@ -18,6 +18,9 @@
     for (const entry of entries || []) {
       const chapterId = cleanupChapterId(entry?.chapterId);
       const title = cleanupTitle(entry?.title);
+      const sectionTitle = cleanupTitle(entry?.sectionTitle);
+      const sectionId = cleanupChapterId(entry?.sectionId);
+      const sectionOrder = cleanupOrder(entry?.sectionOrder);
 
       if (!chapterId || !title || seenChapterIds.has(chapterId)) {
         continue;
@@ -28,7 +31,10 @@
         order: normalized.length + 1,
         title,
         chapterId,
-        url: buildScysChapterUrl(baseUrl, chapterId)
+        url: buildScysChapterUrl(baseUrl, chapterId),
+        sectionTitle: sectionTitle || "",
+        sectionId: sectionId || "",
+        sectionOrder
       });
     }
 
@@ -44,6 +50,11 @@
     return String(value || "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function cleanupOrder(value) {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : 0;
   }
 
   const api = {

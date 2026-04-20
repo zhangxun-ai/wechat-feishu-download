@@ -320,6 +320,7 @@
   }
 
   async function exportScysCourseDocument(format, options) {
+    await waitForScysCourseChapterReady();
     const meta = getScysCourseChapterMeta();
     const liveRoot = getScysCourseExportRoot();
     const rawHtml = liveRoot.innerHTML;
@@ -561,7 +562,12 @@
       return null;
     }
 
-    return document.getElementById(`chapter-title-${chapterId}`);
+    return document.getElementById(`chapter-title-${chapterId}`)
+      || Array.from(document.querySelectorAll(`[data-chapter-id="${chapterId}"]`)).find((node) => {
+        const tagName = node.tagName?.toLowerCase();
+        return /^h[1-6]$/.test(tagName || "") || node.getAttribute?.("role") === "heading";
+      })
+      || null;
   }
 
   function getScysCourseExportRoot() {
@@ -584,12 +590,43 @@
       return [];
     }
 
-    const level3Nodes = Array.from(sidebarRoot.querySelectorAll('[id^="sidebar-level3-"]'));
-    if (level3Nodes.length > 0) {
-      return level3Nodes.map((node) => ({
-        chapterId: getScysChapterIdFromNode(node),
-        title: cleanupInline(node.getAttribute("title") || node.textContent || "")
-      }));
+    const orderedNodes = Array.from(sidebarRoot.querySelectorAll('[id^="sidebar-level2-"], [id^="sidebar-level3-"]'));
+    if (orderedNodes.length > 0) {
+      const entries = [];
+      let currentSectionTitle = "";
+      let currentSectionId = "";
+      let currentSectionOrder = 0;
+
+      for (const node of orderedNodes) {
+        const nodeId = String(node.id || "");
+        const title = cleanupInline(node.getAttribute("title") || node.textContent || "");
+        if (!title) {
+          continue;
+        }
+
+        if (nodeId.startsWith("sidebar-level2-")) {
+          currentSectionTitle = title;
+          currentSectionId = getScysChapterIdFromNode(node);
+          currentSectionOrder += 1;
+          continue;
+        }
+
+        if (!nodeId.startsWith("sidebar-level3-")) {
+          continue;
+        }
+
+        entries.push({
+          chapterId: getScysChapterIdFromNode(node),
+          title,
+          sectionTitle: currentSectionTitle,
+          sectionId: currentSectionId,
+          sectionOrder: currentSectionOrder
+        });
+      }
+
+      if (entries.length > 0) {
+        return entries;
+      }
     }
 
     return Array.from(sidebarRoot.querySelectorAll('a[href*="chapterId="]')).map((node) => ({
@@ -773,6 +810,29 @@
 
   function containsScysCourseNoise(value) {
     return SCYS_LOAD_MORE_MARKERS.some((marker) => String(value || "").includes(marker));
+  }
+
+  async function waitForScysCourseChapterReady(timeoutMs = 15000) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const heading = getCurrentScysChapterHeading();
+      let root = null;
+      if (heading) {
+        try {
+          root = getScysCourseExportRoot();
+        } catch (error) {
+          root = null;
+        }
+      }
+      const text = cleanupInline(root?.innerText || "");
+      if (heading && root && text.length > 20 && !containsScysCourseNoise(text)) {
+        return;
+      }
+      await sleep(250);
+    }
+
+    throw new Error("未定位到当前章节标题");
   }
 
   async function exportGenericWebDocument(format, options) {
@@ -3287,6 +3347,14 @@
       return imageToMarkdown(node);
     }
 
+    if (isScysBulletContainer(node)) {
+      return scysBulletContainerToMarkdown(node, depth);
+    }
+
+    if (isScysOrderedListBlock(node)) {
+      return scysOrderedBlockToMarkdown(node, depth);
+    }
+
     if (tagName === "br") {
       return "\n";
     }
@@ -3404,6 +3472,38 @@
         .map((child) => convertInline(child))
         .join("")
     );
+  }
+
+  function isScysBulletContainer(node) {
+    return node instanceof Element && node.classList.contains("bullet_container");
+  }
+
+  function isScysOrderedListBlock(node) {
+    return node instanceof Element && node.classList.contains("block-order");
+  }
+
+  function scysBulletContainerToMarkdown(node, depth) {
+    const listNode = node.querySelector(":scope > .row > .list") || node.querySelector(".list");
+    const content = cleanupMarkdown(convertInlineChildren(listNode || node));
+    if (!content) {
+      return "";
+    }
+
+    return `${"  ".repeat(depth)}- ${content}`;
+  }
+
+  function scysOrderedBlockToMarkdown(node, depth) {
+    const markerText = cleanupInline(node.querySelector(":scope > .order-marker")?.textContent || "");
+    const normalizedMarker = /^\d+[.)]?$/.test(markerText)
+      ? markerText.replace(/\)+$/, ".")
+      : "1.";
+    const listNode = node.querySelector(":scope > .list") || node.querySelector(".list");
+    const content = cleanupMarkdown(convertInlineChildren(listNode || node));
+    if (!content) {
+      return "";
+    }
+
+    return `${"  ".repeat(depth)}${normalizedMarker} ${content}`;
   }
 
   function listToMarkdown(listNode, depth) {

@@ -12,6 +12,8 @@
     const title = String(payload?.title || "未命名专栏").trim() || "未命名专栏";
     const sourceUrl = String(payload?.sourceUrl || "").trim();
     const exportedAt = String(payload?.exportedAt || new Date().toISOString()).trim();
+    const chapterAnchors = buildChapterAnchorMap(chapters);
+    const chapterGroups = groupCourseChapters(chapters);
     const lines = [
       `# ${title}`,
       "",
@@ -24,21 +26,37 @@
       ""
     ].filter(Boolean);
 
-    for (const chapter of chapters) {
-      lines.push(`- [${chapter.title}](#${slugifyHeading(chapter.title)})`);
+    for (const group of chapterGroups) {
+      if (group.sectionTitle) {
+        lines.push(`- ${group.sectionTitle}`);
+      }
+
+      for (const chapter of group.chapters) {
+        const anchor = chapterAnchors.get(chapter) || buildChapterAnchorId(chapter);
+        const prefix = group.sectionTitle ? "  " : "";
+        lines.push(`${prefix}- [${chapter.title}](#${anchor})`);
+      }
     }
 
-    for (const chapter of chapters) {
-      lines.push(
-        "",
-        "---",
-        "",
-        `## ${chapter.title}`,
-        "",
-        chapter.url ? `原文：${chapter.url}` : "",
-        "",
-        String(chapter.markdown || "").trim()
-      );
+    for (const group of chapterGroups) {
+      lines.push("", "---", "");
+      if (group.sectionTitle) {
+        lines.push(`## ${group.sectionTitle}`, "");
+      }
+
+      for (const chapter of group.chapters) {
+        const anchor = chapterAnchors.get(chapter) || buildChapterAnchorId(chapter);
+        lines.push(
+          `<a id="${anchor}"></a>`,
+          "",
+          `${group.sectionTitle ? "###" : "##"} ${chapter.title}`,
+          "",
+          chapter.url ? `原文：${chapter.url}` : "",
+          "",
+          String(chapter.markdown || "").trim(),
+          ""
+        );
+      }
     }
 
     if (failedChapters.length > 0) {
@@ -59,22 +77,50 @@
     const title = escapeHtml(String(payload?.title || "未命名专栏").trim() || "未命名专栏");
     const sourceUrl = String(payload?.sourceUrl || "").trim();
     const exportedAt = escapeHtml(String(payload?.exportedAt || new Date().toISOString()).trim());
-    const navItems = chapters.map((chapter) => {
-      const id = slugifyHeading(chapter.title);
-      return `<li><a href="#${escapeAttribute(id)}">${escapeHtml(chapter.title)}</a></li>`;
-    }).join("");
-    const chapterSections = chapters.map((chapter) => {
-      const id = slugifyHeading(chapter.title);
-      const source = chapter.url
-        ? `<p class="chapter-source"><a href="${escapeAttribute(chapter.url)}" target="_blank" rel="noreferrer">原文链接</a></p>`
-        : "";
+    const chapterAnchors = buildChapterAnchorMap(chapters);
+    const chapterGroups = groupCourseChapters(chapters);
+    const navItems = chapterGroups.map((group) => {
+      const childItems = group.chapters.map((chapter) => {
+        const id = chapterAnchors.get(chapter) || buildChapterAnchorId(chapter);
+        return `<li><a href="#${escapeAttribute(id)}">${escapeHtml(chapter.title)}</a></li>`;
+      }).join("");
+
+      if (!group.sectionTitle) {
+        return childItems;
+      }
+
       return [
-        `<section id="${escapeAttribute(id)}" class="chapter-section">`,
-        `<h2>${escapeHtml(chapter.title)}</h2>`,
-        source,
-        `<div class="chapter-body">${renderMarkdownToHtml(String(chapter.markdown || ""))}</div>`,
-        "</section>"
+        '<li class="nav-group">',
+        `<p class="nav-group-title">${escapeHtml(group.sectionTitle)}</p>`,
+        `<ul>${childItems}</ul>`,
+        "</li>"
       ].join("");
+    }).join("");
+    const chapterSections = chapterGroups.map((group) => {
+      const sections = [];
+      if (group.sectionTitle) {
+        sections.push(`<section class="chapter-group"><h2 class="chapter-group-title">${escapeHtml(group.sectionTitle)}</h2>`);
+      }
+
+      for (const chapter of group.chapters) {
+        const id = chapterAnchors.get(chapter) || buildChapterAnchorId(chapter);
+        const source = chapter.url
+          ? `<p class="chapter-source"><a href="${escapeAttribute(chapter.url)}" target="_blank" rel="noreferrer">原文链接</a></p>`
+          : "";
+        sections.push([
+          `<section id="${escapeAttribute(id)}" class="chapter-section">`,
+          `<h${group.sectionTitle ? 3 : 2}>${escapeHtml(chapter.title)}</h${group.sectionTitle ? 3 : 2}>`,
+          source,
+          `<div class="chapter-body">${renderMarkdownToHtml(String(chapter.markdown || ""))}</div>`,
+          "</section>"
+        ].join(""));
+      }
+
+      if (group.sectionTitle) {
+        sections.push("</section>");
+      }
+
+      return sections.join("");
     }).join("");
     const failures = failedChapters.length > 0
       ? [
@@ -107,10 +153,15 @@
       ".sidebar h1{margin:0 0 12px;font-size:20px;line-height:1.4;}",
       ".sidebar .meta{font-size:13px;line-height:1.6;color:#94a3b8;}",
       ".sidebar ul{margin:20px 0 0;padding-left:20px;}",
+      ".sidebar .nav-group{margin-bottom:16px;}",
+      ".sidebar .nav-group-title{margin:0 0 8px;font-size:13px;line-height:1.6;color:#94a3b8;}",
+      ".sidebar .nav-group ul{margin:0;padding-left:18px;}",
       ".sidebar a{color:#e2e8f0;text-decoration:none;}",
       ".sidebar a:hover{text-decoration:underline;}",
       ".content{padding:32px 40px;max-width:960px;}",
       ".content h1,.content h2,.content h3{color:#0f172a;}",
+      ".chapter-group{margin-bottom:40px;}",
+      ".chapter-group-title{margin:0 0 24px;padding-bottom:12px;border-bottom:2px solid #e2e8f0;}",
       ".chapter-section{margin-bottom:40px;padding-bottom:32px;border-bottom:1px solid #e2e8f0;}",
       ".chapter-source{margin:0 0 16px;font-size:14px;}",
       ".chapter-source a{color:#2563eb;}",
@@ -148,6 +199,60 @@
       .replace(/[. ]+$/g, "")
       .slice(0, 80) || "course-export";
     return `${base}.${extension}`;
+  }
+
+  function groupCourseChapters(chapters) {
+    const groups = [];
+    let currentGroup = null;
+
+    for (const chapter of chapters) {
+      const sectionTitle = cleanupCourseTitle(chapter?.sectionTitle);
+      const sectionId = cleanupCourseTitle(chapter?.sectionId);
+      const sectionOrder = Number(chapter?.sectionOrder) || 0;
+      const sameGroup = currentGroup
+        && currentGroup.sectionTitle === sectionTitle
+        && currentGroup.sectionId === sectionId
+        && currentGroup.sectionOrder === sectionOrder;
+
+      if (!sameGroup) {
+        currentGroup = {
+          sectionTitle,
+          sectionId,
+          sectionOrder,
+          chapters: []
+        };
+        groups.push(currentGroup);
+      }
+
+      currentGroup.chapters.push(chapter);
+    }
+
+    return groups;
+  }
+
+  function buildChapterAnchorMap(chapters) {
+    const anchors = new Map();
+    const used = new Set();
+
+    for (const chapter of chapters) {
+      let anchor = buildChapterAnchorId(chapter);
+      while (used.has(anchor)) {
+        anchor = `${anchor}-dup`;
+      }
+      used.add(anchor);
+      anchors.set(chapter, anchor);
+    }
+
+    return anchors;
+  }
+
+  function buildChapterAnchorId(chapter) {
+    const pieces = [
+      "chapter",
+      Number(chapter?.order) || 0,
+      slugifyHeading(cleanupCourseTitle(chapter?.sectionTitle) || cleanupCourseTitle(chapter?.title))
+    ].filter(Boolean);
+    return pieces.join("-");
   }
 
   function extractCourseChapterMarkdown(markdown) {
@@ -293,6 +398,10 @@
     return String(value || "")
       .replace(/\r\n?/g, "\n")
       .trim();
+  }
+
+  function cleanupCourseTitle(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
   }
 
   const api = {

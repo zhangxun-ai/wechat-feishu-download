@@ -1,6 +1,8 @@
 const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
 const INTER_TASK_DELAY_MS = 1200;
 const MAX_RETRIES = 2;
+const COURSE_EXPORT_MAX_WORKERS = 2;
+const COURSE_EXPORT_WORKER_STAGGER_MS = 900;
 const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
 const courseExportBuilders = globalThis.CourseExportBuilders || {};
@@ -179,48 +181,19 @@ async function runCourseExportJob(job) {
   }
 
   const totalCount = getJobTotal(job);
-  const exportedChapters = [];
+  const workerCount = getCourseExportWorkerCount(job);
+  const exportedChapters = new Array(totalCount);
   const failedChapters = [];
+  let completedCount = 0;
+  let nextIndex = 0;
   let successCount = 0;
   let failureCount = 0;
 
-  for (let index = 0; index < job.chapters.length; index += 1) {
-    const chapter = job.chapters[index];
-    updateStats(index, successCount, failureCount, totalCount);
-    setStatus(`正在处理 ${index + 1}/${totalCount} 章`, "loading");
-    appendLog(`开始处理 ${index + 1}/${totalCount}: ${chapter.title}`);
+  setStatus(`正在处理专栏，使用 ${workerCount} 个通道。`, "loading");
 
-    try {
-      const rawResult = await exportLinkWithRetry(chapter.url, {
-        format: "markdown",
-        includeImages: job.includeImages !== false
-      });
-      const result = normalizeWechatMarkdownResult(rawResult);
-      const markdown = extractCourseChapterMarkdown(result.content);
-      const markdownError = getCourseChapterMarkdownError(markdown, chapter.url);
-      if (markdownError) {
-        throw new Error(markdownError);
-      }
-      exportedChapters.push({
-        order: chapter.order,
-        title: chapter.title,
-        url: chapter.url,
-        markdown
-      });
-      successCount += 1;
-      appendLog(`已提取: ${chapter.title}`, "success");
-    } catch (error) {
-      failureCount += 1;
-      failedChapters.push({
-        title: chapter.title,
-        url: chapter.url,
-        message: error.message || "未知错误"
-      });
-      appendLog(`失败: ${chapter.title} | ${error.message || "未知错误"}`, "error");
-    }
-
-    await sleep(INTER_TASK_DELAY_MS);
-  }
+  await Promise.all(
+    Array.from({ length: workerCount }, (_, workerIndex) => runCourseExportWorker(workerIndex))
+  );
 
   updateStats(totalCount, successCount, failureCount, totalCount);
 
@@ -236,14 +209,14 @@ async function runCourseExportJob(job) {
     title,
     sourceUrl: job.courseUrl,
     exportedAt,
-    chapters: exportedChapters,
+    chapters: exportedChapters.filter(Boolean),
     failedChapters
   });
   const html = courseExportBuilders.buildCourseHtmlDocument({
     title,
     sourceUrl: job.courseUrl,
     exportedAt,
-    chapters: exportedChapters,
+    chapters: exportedChapters.filter(Boolean),
     failedChapters
   });
 
@@ -260,6 +233,79 @@ async function runCourseExportJob(job) {
   } else {
     setStatus(`专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章。`, "error");
   }
+
+  async function runCourseExportWorker(workerIndex) {
+    let tabId = null;
+
+    await sleep(workerIndex * COURSE_EXPORT_WORKER_STAGGER_MS);
+
+    try {
+      tabId = await createTab("about:blank", false);
+
+      while (true) {
+        const index = nextIndex;
+        if (index >= job.chapters.length) {
+          return;
+        }
+        nextIndex += 1;
+
+        const chapter = job.chapters[index];
+        appendLog(`通道 ${workerIndex + 1} 开始处理 ${index + 1}/${totalCount}: ${chapter.title}`);
+
+        try {
+          const rawResult = await exportLinkInExistingTabWithRetry(tabId, chapter.url, {
+            format: "markdown",
+            includeImages: job.includeImages !== false
+          });
+          const result = normalizeWechatMarkdownResult(rawResult);
+          const markdown = extractCourseChapterMarkdown(result.content);
+          const markdownError = getCourseChapterMarkdownError(markdown, chapter.url);
+          if (markdownError) {
+            throw new Error(markdownError);
+          }
+
+          exportedChapters[index] = {
+            order: chapter.order,
+            title: chapter.title,
+            sectionTitle: chapter.sectionTitle || "",
+            sectionId: chapter.sectionId || "",
+            sectionOrder: chapter.sectionOrder || 0,
+            url: chapter.url,
+            markdown
+          };
+          successCount += 1;
+          appendLog(`已提取: ${chapter.title}`, "success");
+        } catch (error) {
+          failureCount += 1;
+          failedChapters.push({
+            title: chapter.title,
+            url: chapter.url,
+            message: error.message || "未知错误"
+          });
+          appendLog(`失败: ${chapter.title} | ${error.message || "未知错误"}`, "error");
+        }
+
+        completedCount += 1;
+        updateStats(completedCount, successCount, failureCount, totalCount);
+        if (completedCount < totalCount) {
+          setStatus(`正在处理专栏，已完成 ${completedCount}/${totalCount} 章。`, "loading");
+        }
+        await sleep(INTER_TASK_DELAY_MS + (workerIndex * 180));
+      }
+    } finally {
+      if (tabId !== null) {
+        await closeTab(tabId);
+      }
+    }
+  }
+}
+
+function getCourseExportWorkerCount(job) {
+  const totalCount = getJobTotal(job);
+  if (totalCount < 12) {
+    return 1;
+  }
+  return Math.min(COURSE_EXPORT_MAX_WORKERS, 2);
 }
 
 function getJobTotal(job) {
@@ -282,6 +328,29 @@ async function exportLinkWithRetry(url, options) {
         appendLog(`重试 ${attempt}/${MAX_RETRIES}: ${url}`);
       }
       return await exportLink(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_RETRIES) {
+        break;
+      }
+      const delay = (attempt + 1) * 1500;
+      appendLog(`本次失败，将在 ${delay}ms 后重试。`, "error");
+      await sleep(delay);
+    }
+  }
+
+  throw lastError || new Error("导出失败");
+}
+
+async function exportLinkInExistingTabWithRetry(tabId, url, options) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        appendLog(`重试 ${attempt}/${MAX_RETRIES}: ${url}`);
+      }
+      return await exportLinkInExistingTab(tabId, url, options);
     } catch (error) {
       lastError = error;
       if (attempt >= MAX_RETRIES) {
@@ -338,6 +407,34 @@ async function exportLinkInBackground(url, options) {
   } finally {
     await closeTab(tabId);
   }
+}
+
+async function exportLinkInExistingTab(tabId, url, options) {
+  await prepareTabForUrl(tabId, url);
+  const payload = await sendMessageWithRecovery(tabId, {
+    type: "feishu-export:export-document",
+    format: options.format,
+    options: {
+      includeImages: options.includeImages
+    }
+  });
+
+  return {
+    filename: normalizeDownloadFilename(payload.filename, options.format),
+    mimeType: payload.mimeType,
+    content: payload.content
+  };
+}
+
+async function prepareTabForUrl(tabId, url) {
+  const tab = await getTab(tabId);
+  if (String(tab?.url || "") === url) {
+    await reloadTab(tabId);
+  } else {
+    await updateTabUrl(tabId, url);
+  }
+  await waitForTabReady(tabId, url);
+  await sleep(BACKGROUND_TAB_SETTLE_DELAY_MS);
 }
 
 async function exportWechatArticleByHtmlFetch(url, options) {
@@ -494,6 +591,42 @@ function createTab(url, active) {
         return;
       }
       resolve(tab.id);
+    });
+  });
+}
+
+function getTab(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
+function updateTabUrl(tabId, url) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.update(tabId, { url }, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
+function reloadTab(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.reload(tabId, { bypassCache: true }, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
     });
   });
 }
@@ -716,13 +849,14 @@ function removeJob(jobId) {
 
 function buildMeta(job) {
   if (job.type === "course-export") {
+    const workerCount = getCourseExportWorkerCount(job);
     return [
       `共 ${getJobTotal(job)} 章`,
       job.courseTitle || "当前专栏",
       job.includeImages === false ? "不带图" : "带图",
       "单文件 Markdown",
       "单文件 HTML",
-      "串行稳态模式"
+      workerCount > 1 ? `${workerCount} 通道稳态模式` : "单通道稳态模式"
     ].join(" | ");
   }
 

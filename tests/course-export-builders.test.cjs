@@ -29,7 +29,7 @@ test("builds a merged markdown document with toc and failures", () => {
   });
 
   assert.match(markdown, /^# CLI类AI编程工具速通/m);
-  assert.match(markdown, /\[前言\]\(#前言\)/);
+  assert.match(markdown, /\[前言\]\(#chapter-1-/);
   assert.match(markdown, /## 前言/);
   assert.match(markdown, /失败章节/);
 });
@@ -47,8 +47,8 @@ test("builds a standalone html reader with nav links and failure panel", () => {
   });
 
   assert.match(html, /<nav[\s>]/);
-  assert.match(html, /href="#前言"/);
-  assert.match(html, /<section id="前言"/);
+  assert.match(html, /href="#chapter-1-/);
+  assert.match(html, /<section id="chapter-1-/);
   assert.match(html, /失败章节/);
 });
 
@@ -102,4 +102,75 @@ test("marks scys markdown with load-more noise as invalid", () => {
     getCourseChapterMarkdownError(wrappedMarkdown, "https://scys.com/deepsea/2001/course/164?chapterId=10899"),
     "章节正文仍包含页面加载噪音"
   );
+});
+
+test("builds grouped course navigation with unique anchors for duplicate titles", () => {
+  const markdown = buildCourseMarkdownDocument({
+    title: "生财有术",
+    sourceUrl: "https://scys.com/deepsea/2001/course/164?chapterId=10919",
+    exportedAt: "2026-04-20T00:00:00.000Z",
+    chapters: [
+      {
+        order: 1,
+        title: "事务性邮件（Transactional Email）",
+        sectionTitle: "十九、邮件服务：想让产品主动联系用户，怎么办？",
+        url: "https://example.com/10919",
+        markdown: "- 注册成功后的欢迎邮件"
+      },
+      {
+        order: 2,
+        title: "要点回顾",
+        sectionTitle: "十九、邮件服务：想让产品主动联系用户，怎么办？",
+        url: "https://example.com/10927",
+        markdown: "1. 选 Resend。"
+      },
+      {
+        order: 3,
+        title: "要点回顾",
+        sectionTitle: "二十、定时任务：你睡了，产品还能自己干活",
+        url: "https://example.com/10937",
+        markdown: "1. 理解定时任务。"
+      }
+    ],
+    failedChapters: []
+  });
+
+  assert.match(markdown, /- 十九、邮件服务：想让产品主动联系用户，怎么办？/);
+  assert.match(markdown, /- 二十、定时任务：你睡了，产品还能自己干活/);
+  assert.match(markdown, /### 事务性邮件（Transactional Email）/);
+  assert.match(markdown, /### 要点回顾/);
+  assert.match(markdown, /\(#chapter-2-/);
+  assert.match(markdown, /\(#chapter-3-/);
+});
+
+test("builds grouped html nav with unique ids for duplicate titles", () => {
+  const html = buildCourseHtmlDocument({
+    title: "生财有术",
+    sourceUrl: "https://scys.com/deepsea/2001/course/164?chapterId=10919",
+    exportedAt: "2026-04-20T00:00:00.000Z",
+    chapters: [
+      {
+        order: 1,
+        title: "要点回顾",
+        sectionTitle: "十九、邮件服务：想让产品主动联系用户，怎么办？",
+        url: "https://example.com/10927",
+        markdown: "1. 选 Resend。"
+      },
+      {
+        order: 2,
+        title: "要点回顾",
+        sectionTitle: "二十、定时任务：你睡了，产品还能自己干活",
+        url: "https://example.com/10937",
+        markdown: "1. 理解定时任务。"
+      }
+    ],
+    failedChapters: []
+  });
+
+  assert.match(html, /十九、邮件服务：想让产品主动联系用户，怎么办？/);
+  assert.match(html, /二十、定时任务：你睡了，产品还能自己干活/);
+  assert.match(html, /href="#chapter-1-/);
+  assert.match(html, /href="#chapter-2-/);
+  assert.match(html, /section id="chapter-1-/);
+  assert.match(html, /section id="chapter-2-/);
 });
