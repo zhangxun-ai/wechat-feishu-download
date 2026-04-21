@@ -4,6 +4,7 @@ const MAX_RETRIES = 2;
 const COURSE_EXPORT_WORKER_STAGGER_MS = 900;
 const MESSAGE_FETCH_ASSET = "exporter:fetch-asset";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
+const exportUiModels = globalThis.ExportUiModels || {};
 const courseExportBuilders = globalThis.CourseExportBuilders || {};
 const courseExportRuntime = globalThis.CourseExportRuntime || {};
 const obsidianExportApi = globalThis.ObsidianExport || {};
@@ -16,6 +17,13 @@ const getCourseChapterMarkdownError = (value, sourceUrl) => courseExportBuilders
 const formatElapsedDuration = (value) => courseExportRuntime.formatElapsedDuration?.(value) || "00:00";
 const getCourseExportExecutionProfileForTotal = (totalCount) => courseExportRuntime.getCourseExportExecutionProfile?.(totalCount) || null;
 const getCourseExportWorkerCountForTotal = (totalCount) => courseExportRuntime.getCourseExportWorkerCount?.(totalCount) || 1;
+const normalizeOutputTarget = (value, fallback) => exportUiModels.normalizeOutputTarget?.(value, fallback) || "download";
+const getOutputTargetState = (value) => exportUiModels.getOutputTargetState?.(value) || {
+  key: "download",
+  wantsDownload: true,
+  wantsObsidian: false,
+  label: "仅下载"
+};
 const buildObsidianNoteFile = (payload) => obsidianExportApi.buildObsidianNoteFile?.(payload);
 const buildObsidianCourseBundle = (payload) => obsidianExportApi.buildObsidianCourseBundle?.(payload);
 const maybeStripWechatUiNoiseFromMarkdown = (value) => {
@@ -88,7 +96,8 @@ async function init() {
 }
 
 async function runLinkBatchJob(job) {
-  const zipOutput = job.zipOutput !== false;
+  const outputTarget = getJobOutputTargetState(job);
+  const zipOutput = job.zipOutput !== false && outputTarget.wantsDownload;
   const zipBuilder = zipOutput ? new SimpleZipBuilder() : null;
   const usedNames = new Set();
   const exportedEntries = [];
@@ -110,7 +119,7 @@ async function runLinkBatchJob(job) {
       });
       const result = normalizeWechatMarkdownResult(rawResult);
 
-       if (job.saveToObsidian) {
+      if (outputTarget.wantsObsidian) {
         try {
           await writeSingleNoteToObsidian(link, result);
         } catch (error) {
@@ -126,13 +135,18 @@ async function runLinkBatchJob(job) {
           filename: entryName
         });
         appendLog(`已加入 ZIP: ${entryName}`, "success");
-      } else {
+      } else if (outputTarget.wantsDownload) {
         await downloadExportResult(result);
         exportedEntries.push({
           url: link,
           filename: result.filename
         });
         appendLog(`已下载: ${result.filename}`, "success");
+      } else {
+        exportedEntries.push({
+          url: link,
+          filename: result.filename
+        });
       }
 
       successCount += 1;
@@ -201,11 +215,17 @@ async function runLinkBatchJob(job) {
   updateStats(totalCount, successCount, failureCount, totalCount);
 
   if (failureCount === 0) {
-    setStatus(zipOutput ? `下载完成，并已打包 ZIP，共 ${successCount} 篇。` : `下载完成，共 ${successCount} 篇。`, "ready");
+    if (outputTarget.key === "both") {
+      setStatus(zipOutput ? `输出完成，已打包 ZIP 并同步 Obsidian，共 ${successCount} 篇。` : `输出完成，已下载并同步 Obsidian，共 ${successCount} 篇。`, "ready");
+    } else if (outputTarget.key === "obsidian") {
+      setStatus(`输出完成，已写入 Obsidian，共 ${successCount} 篇。`, "ready");
+    } else {
+      setStatus(zipOutput ? `下载完成，并已打包 ZIP，共 ${successCount} 篇。` : `下载完成，共 ${successCount} 篇。`, "ready");
+    }
   } else if (successCount > 0) {
-    setStatus(`下载完成，成功 ${successCount} 篇，失败 ${failureCount} 篇。`, "error");
+    setStatus(`输出完成，成功 ${successCount} 篇，失败 ${failureCount} 篇。`, "error");
   } else {
-    setStatus(`下载失败，共 ${failureCount} 篇。`, "error");
+    setStatus(`输出失败，共 ${failureCount} 篇。`, "error");
   }
 }
 
@@ -217,6 +237,7 @@ async function runCourseExportJob(job) {
   }
 
   const totalCount = getJobTotal(job);
+  const outputTarget = getJobOutputTargetState(job);
   const executionProfile = getCourseExportExecutionProfile(job);
   const workerCount = executionProfile.workerCount;
   const exportedChapters = new Array(totalCount);
@@ -246,34 +267,42 @@ async function runCourseExportJob(job) {
     return;
   }
 
-  setStatus("正在生成 Markdown 和 HTML 文件…", "loading");
   const exportedAt = new Date().toISOString();
   const title = String(job.courseTitle || job.title || "未命名专栏");
-  const markdown = courseExportBuilders.buildCourseMarkdownDocument({
-    title,
-    sourceUrl: job.courseUrl,
-    exportedAt,
-    chapters: exportedChapters.filter(Boolean),
-    failedChapters
-  });
-  const html = courseExportBuilders.buildCourseHtmlDocument({
-    title,
-    sourceUrl: job.courseUrl,
-    exportedAt,
-    chapters: exportedChapters.filter(Boolean),
-    failedChapters
-  });
+  let markdown = "";
+  let html = "";
+  let markdownFilename = "";
+  let htmlFilename = "";
 
-  const markdownFilename = courseExportBuilders.buildCourseFilename(title, "md");
-  const htmlFilename = courseExportBuilders.buildCourseFilename(title, "html");
+  if (outputTarget.wantsDownload) {
+    setStatus("正在生成 Markdown 和 HTML 文件…", "loading");
+    markdown = courseExportBuilders.buildCourseMarkdownDocument({
+      title,
+      sourceUrl: job.courseUrl,
+      exportedAt,
+      chapters: exportedChapters.filter(Boolean),
+      failedChapters
+    });
+    html = courseExportBuilders.buildCourseHtmlDocument({
+      title,
+      sourceUrl: job.courseUrl,
+      exportedAt,
+      chapters: exportedChapters.filter(Boolean),
+      failedChapters
+    });
 
-  await downloadGeneratedText(markdown, "text/markdown;charset=utf-8", markdownFilename, buildFallbackFilenameForExtension("md"));
-  appendLog(`已下载: ${markdownFilename}`, "success");
-  await downloadGeneratedText(html, "text/html;charset=utf-8", htmlFilename, buildFallbackFilenameForExtension("html"));
-  appendLog(`已下载: ${htmlFilename}`, "success");
+    markdownFilename = courseExportBuilders.buildCourseFilename(title, "md");
+    htmlFilename = courseExportBuilders.buildCourseFilename(title, "html");
+    await downloadGeneratedText(markdown, "text/markdown;charset=utf-8", markdownFilename, buildFallbackFilenameForExtension("md"));
+    appendLog(`已下载: ${markdownFilename}`, "success");
+    await downloadGeneratedText(html, "text/html;charset=utf-8", htmlFilename, buildFallbackFilenameForExtension("html"));
+    appendLog(`已下载: ${htmlFilename}`, "success");
+  } else if (outputTarget.wantsObsidian) {
+    setStatus("正在写入 Obsidian 知识库包…", "loading");
+  }
 
   let obsidianOutcome = "";
-  if (job.saveToObsidian) {
+  if (outputTarget.wantsObsidian) {
     const obsidianPayload = {
       title,
       sourceUrl: job.courseUrl,
@@ -300,10 +329,22 @@ async function runCourseExportJob(job) {
 
   const elapsed = formatElapsedDuration(Date.now() - jobStartedAt);
   if (failureCount === 0) {
-    setStatus(`专栏导出完成，已生成 Markdown 和 HTML${obsidianOutcome}，共 ${successCount} 章，总耗时 ${elapsed}。`, "ready");
+    setStatus(buildCourseCompletionMessage({
+      outputTarget,
+      successCount,
+      failureCount,
+      obsidianOutcome,
+      elapsed
+    }), "ready");
     appendLog(`任务结束，总耗时 ${elapsed}。`, "success");
   } else {
-    setStatus(`专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章${obsidianOutcome}，总耗时 ${elapsed}。`, "error");
+    setStatus(buildCourseCompletionMessage({
+      outputTarget,
+      successCount,
+      failureCount,
+      obsidianOutcome,
+      elapsed
+    }), "error");
     appendLog(`任务结束，总耗时 ${elapsed}。`, "error");
   }
 
@@ -395,6 +436,25 @@ async function runCourseExportJob(job) {
   }
 }
 
+function buildCourseCompletionMessage({ outputTarget, successCount, failureCount, obsidianOutcome, elapsed }) {
+  const base = failureCount === 0
+    ? `专栏导出完成，共 ${successCount} 章`
+    : `专栏导出完成，成功 ${successCount} 章，失败 ${failureCount} 章`;
+
+  if (outputTarget.key === "obsidian") {
+    if (obsidianOutcome.includes("失败")) {
+      return `${base}，但写入 Obsidian 失败，总耗时 ${elapsed}。`;
+    }
+    return `${base}，已写入 Obsidian，总耗时 ${elapsed}。`;
+  }
+
+  if (outputTarget.key === "both") {
+    return `${base}，已生成 Markdown 和 HTML${obsidianOutcome}，总耗时 ${elapsed}。`;
+  }
+
+  return `${base}，已生成 Markdown 和 HTML，总耗时 ${elapsed}。`;
+}
+
 function getCourseExportExecutionProfile(job) {
   const totalCount = getJobTotal(job);
   const profile = getCourseExportExecutionProfileForTotal(totalCount);
@@ -429,6 +489,11 @@ function getJobTotal(job) {
 
 function getJobUnitLabel(job) {
   return job.type === "course-export" ? "章" : "篇";
+}
+
+function getJobOutputTargetState(job) {
+  const fallback = job?.saveToObsidian === true ? "both" : "download";
+  return getOutputTargetState(normalizeOutputTarget(job?.outputTarget, fallback));
 }
 
 async function exportLinkWithRetry(url, options) {
@@ -1032,15 +1097,16 @@ function removeJob(jobId) {
 }
 
 function buildMeta(job) {
+  const outputTarget = getJobOutputTargetState(job);
   if (job.type === "course-export") {
     const profile = getCourseExportExecutionProfile(job);
     return [
       `共 ${getJobTotal(job)} 章`,
       job.courseTitle || "当前专栏",
       job.includeImages === false ? "不带图" : "带图",
-      "单文件 Markdown",
-      "单文件 HTML",
-      job.saveToObsidian ? "同步 Obsidian" : "仅下载",
+      outputTarget.wantsDownload ? "单文件 Markdown" : "不下载 Markdown",
+      outputTarget.wantsDownload ? "单文件 HTML" : "不下载 HTML",
+      outputTarget.label,
       profile.workerCount > 1 ? `${profile.workerCount} 通道${profile.label}` : `单通道${profile.label}`
     ].join(" | ");
   }
@@ -1053,8 +1119,12 @@ function buildMeta(job) {
     pieces.push(`${job.dateRange.startDate} ~ ${job.dateRange.endDate}`);
   }
   pieces.push(job.includeImages === false ? "不带图" : "带图");
-  pieces.push(job.zipOutput === false ? "逐篇下载" : "ZIP 打包");
-  pieces.push(job.saveToObsidian ? "同步 Obsidian" : "仅下载");
+  if (outputTarget.wantsDownload) {
+    pieces.push(job.zipOutput === false ? "逐篇下载" : "ZIP 打包");
+  } else {
+    pieces.push("不触发浏览器下载");
+  }
+  pieces.push(outputTarget.label);
   pieces.push("串行稳态模式");
   pieces.push("公众号直抓优先");
   return pieces.join(" | ");

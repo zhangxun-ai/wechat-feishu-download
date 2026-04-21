@@ -9,7 +9,7 @@
 
 body {
   margin: 0;
-  min-width: 380px;
+  min-width: 400px;
 }
 
 .app {
@@ -48,7 +48,24 @@ body {
   box-shadow: 0 14px 30px rgba(98, 73, 33, 0.08);
 }
 
+.panel-primary {
+  background:
+    linear-gradient(180deg, rgba(255, 252, 247, 0.96) 0%, rgba(255, 248, 236, 0.92) 100%);
+}
+
 .panel-head {
+  display: grid;
+  gap: 4px;
+}
+
+.panel-head-inline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-head-copy {
   display: grid;
   gap: 4px;
 }
@@ -73,6 +90,7 @@ body {
 }
 
 .status {
+  margin-top: 14px;
   padding: 10px 12px;
   border-radius: 12px;
   font-size: 13px;
@@ -100,6 +118,10 @@ body {
   gap: 10px;
 }
 
+.meta-compact {
+  gap: 8px;
+}
+
 .meta-row {
   display: grid;
   gap: 6px;
@@ -117,15 +139,65 @@ body {
   word-break: break-word;
 }
 
-.actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+.quick-settings {
   margin-top: 16px;
+  display: grid;
+  gap: 12px;
 }
 
-.actions-uneven {
+.quick-card {
+  padding: 12px 14px;
+  border: 1px solid rgba(142, 110, 61, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 249, 239, 0.92);
+  display: grid;
+  gap: 10px;
+}
+
+.field-label {
+  color: #856f4e;
+  font-size: 12px;
+}
+
+.segmented {
+  display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid rgba(142, 110, 61, 0.18);
+  border-radius: 12px;
+  background: #fffdf8;
+  color: #4d3414;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.segment:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(114, 76, 25, 0.08);
+}
+
+.segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segment:has(input:checked) {
+  border-color: #b36b10;
+  background: linear-gradient(180deg, rgba(217, 134, 22, 0.14) 0%, rgba(198, 110, 15, 0.12) 100%);
+  color: #8f4e05;
 }
 
 .toggle {
@@ -138,6 +210,10 @@ body {
   border: 1px solid rgba(142, 110, 61, 0.18);
   border-radius: 14px;
   background: rgba(255, 249, 239, 0.92);
+}
+
+.toggle-quick {
+  margin-top: 0;
 }
 
 .toggle-compact {
@@ -167,6 +243,48 @@ body {
   color: #6d6457;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.summary-bar {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(142, 110, 61, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 249, 239, 0.92);
+}
+
+.summary-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.summary-label {
+  color: #856f4e;
+  font-size: 12px;
+}
+
+.summary-value {
+  color: #2d2419;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.actions-uneven {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .button {
@@ -199,6 +317,15 @@ body {
   color: #fff8ef;
 }
 
+.button-subtle {
+  background: rgba(255, 249, 239, 0.92);
+}
+
+.button-small {
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
 .hint {
   margin-top: 14px;
 }
@@ -207,8 +334,20 @@ body {
   margin-top: 10px;
 }
 
-.button-subtle {
-  background: rgba(255, 249, 239, 0.92);
+.advanced-content {
+  margin-top: 16px;
+  display: grid;
+  gap: 0;
+}
+
+.workspace-section {
+  display: grid;
+  gap: 0;
+}
+
+.divider {
+  margin: 16px 0;
+  border-top: 1px solid rgba(69, 47, 19, 0.08);
 }
 
 .field-group {
@@ -226,11 +365,6 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
-}
-
-.field-label {
-  color: #856f4e;
-  font-size: 12px;
 }
 
 .text-input {
@@ -286,11 +420,6 @@ body {
 
 .log-entry-error {
   color: #8d2323;
-}
-
-.divider {
-  margin-top: 16px;
-  border-top: 1px solid rgba(69, 47, 19, 0.08);
 }
 
 .note-card {
