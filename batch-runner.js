@@ -43,6 +43,8 @@ let jobStartedAt = Date.now();
 let elapsedTimerId = 0;
 let workerStates = [];
 let pendingObsidianRetry = null;
+let cachedObsidianBinding = null;
+let cachedObsidianBindingPromise = null;
 
 retryObsidianWriteButton?.addEventListener("click", handleRetryObsidianWrite);
 
@@ -61,6 +63,8 @@ async function init() {
   if (!job) {
     throw new Error("任务不存在或已失效");
   }
+
+  cachedObsidianBinding = await primeObsidianBinding();
 
   const totalCount = getJobTotal(job);
   jobStartedAt = Date.now();
@@ -893,11 +897,7 @@ async function downloadGeneratedText(content, mimeType, filename, fallbackFilena
 }
 
 async function writeCourseBundleToObsidian(payload) {
-  if (typeof buildObsidianCourseBundle !== "function") {
-    throw new Error("Obsidian 导出模块未加载");
-  }
-
-  const binding = await obsidianVaultStorage.getVaultBinding?.();
+  const binding = cachedObsidianBinding || await primeObsidianBinding();
   if (!binding?.handle) {
     throw new Error("未配置 Obsidian 目标目录");
   }
@@ -907,10 +907,7 @@ async function writeCourseBundleToObsidian(payload) {
     throw buildObsidianPermissionError();
   }
 
-  const bundle = buildObsidianCourseBundle(payload);
-  await obsidianVaultStorage.writeTextFiles?.(binding.handle, bundle.files);
-  appendLog(`已写入 Obsidian：${bundle.indexPath}`, "success");
-  return "并已写入 Obsidian";
+  return writeCourseBundleToObsidianWithBinding(payload, binding);
 }
 
 async function writeSingleNoteToObsidian(sourceUrl, result) {
@@ -918,7 +915,7 @@ async function writeSingleNoteToObsidian(sourceUrl, result) {
     throw new Error("Obsidian 导出模块未加载");
   }
 
-  const binding = await obsidianVaultStorage.getVaultBinding?.();
+  const binding = cachedObsidianBinding || await primeObsidianBinding();
   if (!binding?.handle) {
     throw new Error("未配置 Obsidian 目标目录");
   }
@@ -1129,9 +1126,19 @@ async function handleRetryObsidianWrite() {
   appendLog("开始重新授权 Obsidian 目录并补写导出文件。");
 
   try {
+    const binding = cachedObsidianBinding;
+    if (!binding?.handle) {
+      throw new Error("未配置 Obsidian 目标目录，请回到弹窗重新选择目录。");
+    }
+
+    const permission = await obsidianVaultStorage.promptVaultPermission?.(binding.handle, "readwrite");
+    if (permission !== "granted") {
+      throw buildObsidianPermissionError();
+    }
+
     switch (retryState.kind) {
       case "course-bundle":
-        await writeCourseBundleToObsidian(retryState.payload);
+        await writeCourseBundleToObsidianWithBinding(retryState.payload, binding);
         break;
       default:
         throw new Error("当前任务类型暂不支持 Obsidian 重试");
@@ -1146,6 +1153,40 @@ async function handleRetryObsidianWrite() {
     appendLog(`Obsidian 重试失败：${error.message || "未知错误"}`, "error");
     setStatus(error.message || "Obsidian 重试失败", "error");
   }
+}
+
+async function writeCourseBundleToObsidianWithBinding(payload, binding) {
+  if (typeof buildObsidianCourseBundle !== "function") {
+    throw new Error("Obsidian 导出模块未加载");
+  }
+
+  if (!binding?.handle) {
+    throw new Error("未配置 Obsidian 目标目录");
+  }
+
+  const bundle = buildObsidianCourseBundle(payload);
+  await obsidianVaultStorage.writeTextFiles?.(binding.handle, bundle.files, {
+    skipPermissionCheck: true
+  });
+  appendLog(`已写入 Obsidian：${bundle.indexPath}`, "success");
+  return "并已写入 Obsidian";
+}
+
+async function primeObsidianBinding() {
+  if (cachedObsidianBindingPromise) {
+    return cachedObsidianBindingPromise;
+  }
+
+  cachedObsidianBindingPromise = Promise.resolve(obsidianVaultStorage.getVaultBinding?.())
+    .then((binding) => {
+      cachedObsidianBinding = binding || null;
+      return cachedObsidianBinding;
+    })
+    .finally(() => {
+      cachedObsidianBindingPromise = null;
+    });
+
+  return cachedObsidianBindingPromise;
 }
 
 function setWorkerState(workerIndex, status, detail) {

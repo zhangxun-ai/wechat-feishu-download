@@ -3,6 +3,7 @@
   const STORE_NAME = "bindings";
   const HANDLE_KEY = "vault-handle";
   const META_KEY = "vault-meta";
+  const DEFAULT_PERMISSION_TIMEOUT_MS = 8000;
 
   function isSupported() {
     return typeof globalScope.indexedDB !== "undefined" && typeof globalScope.showDirectoryPicker === "function";
@@ -76,6 +77,34 @@
     }
   }
 
+  async function promptVaultPermission(handle, mode = "readwrite", options = {}) {
+    if (!handle?.requestPermission) {
+      throw new Error("当前浏览器环境不支持 Obsidian 目录授权");
+    }
+
+    const timeoutMs = Number(options?.timeoutMs);
+    const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : DEFAULT_PERMISSION_TIMEOUT_MS;
+
+    try {
+      return await raceWithTimeout(
+        handle.requestPermission({ mode }),
+        effectiveTimeoutMs,
+        `Obsidian 目录授权请求超时，请回到弹窗重新选择目录后再试。`
+      );
+    } catch (error) {
+      const message = String(error?.message || "");
+      if (error?.name === "SecurityError") {
+        throw new Error("Obsidian 目录授权必须由当前点击动作直接触发，请重新点击授权按钮。");
+      }
+      if (message.includes("授权请求超时")) {
+        throw error;
+      }
+      return "denied";
+    }
+  }
+
   async function ensureVaultPermission(handle, mode = "readwrite") {
     const current = await queryVaultPermission(handle, mode);
     if (current === "granted") {
@@ -85,14 +114,16 @@
     return requestVaultPermission(handle, mode);
   }
 
-  async function writeTextFiles(handle, files) {
+  async function writeTextFiles(handle, files, options = {}) {
     if (!handle) {
       throw new Error("未配置 Obsidian 目标目录");
     }
 
-    const permission = await ensureVaultPermission(handle, "readwrite");
-    if (permission !== "granted") {
-      throw new Error("Obsidian 目标目录当前不可写，请重新授权后再试");
+    if (options.skipPermissionCheck !== true) {
+      const permission = await ensureVaultPermission(handle, "readwrite");
+      if (permission !== "granted") {
+        throw new Error("Obsidian 目标目录当前不可写，请重新授权后再试");
+      }
     }
 
     for (const file of files || []) {
@@ -194,6 +225,26 @@
     }
   }
 
+  function raceWithTimeout(promise, timeoutMs, message) {
+    let timeoutId = 0;
+
+    return new Promise((resolve, reject) => {
+      timeoutId = globalScope.setTimeout(() => {
+        reject(new Error(message));
+      }, timeoutMs);
+
+      Promise.resolve(promise)
+        .then((value) => {
+          globalScope.clearTimeout(timeoutId);
+          resolve(value);
+        })
+        .catch((error) => {
+          globalScope.clearTimeout(timeoutId);
+          reject(error);
+        });
+    });
+  }
+
   const api = {
     isSupported,
     pickDirectory,
@@ -202,6 +253,7 @@
     clearVaultBinding,
     queryVaultPermission,
     requestVaultPermission,
+    promptVaultPermission,
     ensureVaultPermission,
     writeTextFiles
   };
