@@ -5,12 +5,15 @@ const exportUrlUtils = globalThis.ExportUrlUtils || {};
 const exportUiModels = globalThis.ExportUiModels || {};
 const obsidianExportApi = globalThis.ObsidianExport || {};
 const obsidianVaultStorage = globalThis.ObsidianVaultStorage || {};
+const classifyExportUrl = (url) => exportUrlUtils.classifyExportUrl?.(url) || "unsupported";
 const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || false;
 const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || false;
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const isWechatMpBackendUrl = (url) => exportUrlUtils.isWechatMpBackendUrl?.(url) || false;
 const isScysCourseUrl = (url) => exportUrlUtils.isScysCourseUrl?.(url) || false;
 const buildObsidianNoteFile = (payload) => obsidianExportApi.buildObsidianNoteFile?.(payload);
+const getPopupCategories = () => exportUiModels.getPopupCategories?.() || [];
+const resolvePopupCategory = (value) => exportUiModels.resolvePopupCategory?.(value) || "other";
 const normalizeOutputTarget = (value, fallback) => exportUiModels.normalizeOutputTarget?.(value, fallback) || "download";
 const getOutputTargetState = (value) => exportUiModels.getOutputTargetState?.(value) || {
   key: "download",
@@ -33,21 +36,29 @@ const maybeStripWechatUiNoiseFromMarkdown = (value) => {
 const statusEl = document.getElementById("status");
 const primaryHeadlineEl = document.getElementById("primaryHeadline");
 const primarySummaryEl = document.getElementById("primarySummary");
+const detectedCategoryBadgeEl = document.getElementById("detectedCategoryBadge");
+const categorySummaryEl = document.getElementById("categorySummary");
 const titleEl = document.getElementById("docTitle");
 const typeEl = document.getElementById("docType");
 const primaryActionButton = document.getElementById("primaryAction");
 const secondaryActionButton = document.getElementById("secondaryAction");
-const exportMarkdownButton = document.getElementById("exportMarkdown");
-const exportCourseButton = document.getElementById("exportCourse");
+const scysWorkspaceEl = document.getElementById("scysWorkspace");
+const scysWorkspaceNoteEl = document.getElementById("scysWorkspaceNote");
+const scysExportCourseButton = document.getElementById("scysExportCourse");
+const scysExportCurrentButton = document.getElementById("scysExportCurrent");
+const batchWorkspaceEl = document.getElementById("batchWorkspace");
+const batchWorkspaceTitleEl = document.getElementById("batchWorkspaceTitle");
+const batchWorkspaceSummaryEl = document.getElementById("batchWorkspaceSummary");
+const batchLinksLabelEl = document.getElementById("batchLinksLabel");
+const wechatWorkspaceEl = document.getElementById("wechatWorkspace");
+const otherWorkspaceEl = document.getElementById("otherWorkspace");
+const otherWorkspaceNoteEl = document.getElementById("otherWorkspaceNote");
 const includeImagesInput = document.getElementById("includeImages");
 const outputTargetDownloadInput = document.getElementById("outputTargetDownload");
 const outputTargetBothInput = document.getElementById("outputTargetBoth");
 const outputTargetObsidianInput = document.getElementById("outputTargetObsidian");
 const outputTargetInputs = [outputTargetDownloadInput, outputTargetBothInput, outputTargetObsidianInput].filter(Boolean);
 const primaryHintEl = document.getElementById("primaryHint");
-const toggleAdvancedButton = document.getElementById("toggleAdvanced");
-const advancedToggleMirrorButton = document.getElementById("advancedToggleMirror");
-const advancedContentEl = document.getElementById("advancedContent");
 const obsidianStatusEl = document.getElementById("obsidianStatus");
 const obsidianFolderEl = document.getElementById("obsidianFolder");
 const obsidianSummaryEl = document.getElementById("obsidianSummary");
@@ -67,13 +78,24 @@ const helperCheckButton = document.getElementById("helperCheck");
 const openWechatMpLoginButton = document.getElementById("openWechatMpLogin");
 const helperDownloadButton = document.getElementById("helperDownload");
 const helperLogEl = document.getElementById("helperLog");
+const categoryTabButtons = new Map(
+  getPopupCategories().map((item) => [
+    item.key,
+    document.getElementById(`categoryTab${item.key.charAt(0).toUpperCase()}${item.key.slice(1)}`)
+  ])
+);
 
 let activeTabId = null;
 let pageInfo = null;
 let isWechatHistoryRunning = false;
 let obsidianBinding = null;
 let outputTarget = "download";
-let advancedExpanded = false;
+let currentExportType = "unsupported";
+let detectedCategory = "other";
+let activeCategory = "other";
+let actionButtonsLocked = false;
+let courseExportVisible = false;
+let courseExportEnabled = false;
 let primaryActionModel = {
   headline: "当前页",
   summary: "正在识别当前页面…",
@@ -85,10 +107,10 @@ init().catch((error) => {
   setStatus(error.message || "初始化失败", "error");
 });
 
-exportMarkdownButton.addEventListener("click", () => handleExport("markdown"));
-exportCourseButton.addEventListener("click", handleCourseExport);
 primaryActionButton.addEventListener("click", handlePrimaryAction);
 secondaryActionButton.addEventListener("click", handleSecondaryAction);
+scysExportCourseButton.addEventListener("click", handleCourseExport);
+scysExportCurrentButton.addEventListener("click", () => handleExport("markdown"));
 batchDownloadLinksButton.addEventListener("click", handleBatchDownloadLinks);
 helperCheckButton.addEventListener("click", () => refreshWechatMpStatus({ silent: false }));
 openWechatMpLoginButton.addEventListener("click", handleOpenWechatMpLogin);
@@ -98,15 +120,15 @@ includeImagesHelperInput.addEventListener("change", () => syncIncludeImages(fals
 outputTargetInputs.forEach((input) => input.addEventListener("change", handleOutputTargetChange));
 pickObsidianFolderButton.addEventListener("click", handlePickObsidianFolder);
 clearObsidianFolderButton.addEventListener("click", handleClearObsidianFolder);
-toggleAdvancedButton.addEventListener("click", toggleAdvancedWorkspace);
-advancedToggleMirrorButton.addEventListener("click", toggleAdvancedWorkspace);
+categoryTabButtons.forEach((button, key) => {
+  button?.addEventListener("click", () => setActiveCategory(key));
+});
 
 async function init() {
   initializeHistoryDateRange();
   syncIncludeImages(true);
   await loadPopupPreferences();
   applyOutputTargetToInputs();
-  renderAdvancedWorkspace();
   await refreshObsidianBinding({ silent: true });
 
   const [tab] = await queryActiveTab();
@@ -115,15 +137,17 @@ async function init() {
   }
 
   activeTabId = tab.id;
-  const canExportCourse = Boolean(tab.url && isScysCourseUrl(tab.url));
+  currentExportType = classifyExportUrl(tab.url || "");
+  detectedCategory = resolvePopupCategory({
+    exportType: currentExportType,
+    isWechatMpBackend: Boolean(tab.url && isWechatMpBackendUrl(tab.url)),
+    isScysCourse: Boolean(tab.url && isScysCourseUrl(tab.url))
+  });
+  activeCategory = detectedCategory;
   setCourseExportAvailability(false, false);
 
   if (tab.url && isWechatArticleUrl(tab.url)) {
     helperSeedUrlInput.value = tab.url;
-  }
-
-  if (canExportCourse) {
-    setCourseExportAvailability(true, false);
   }
 
   if (tab.url && isWechatMpBackendUrl(tab.url)) {
@@ -147,17 +171,17 @@ async function init() {
       if (!pageInfo?.supports || !pageInfo.supports.includes("markdown")) {
         setStatus("检测到当前页面还在运行旧版脚本，请刷新页面后再试。", "error");
         setButtonsDisabled(true);
-        setCourseExportAvailability(canExportCourse, false);
+        setCourseExportAvailability(Boolean(tab.url && isScysCourseUrl(tab.url)), false);
       } else {
         setStatus("页面已就绪，可以直接导出。", "ready");
         setButtonsDisabled(false);
-        setCourseExportAvailability(canExportCourse, canExportCourse);
+        setCourseExportAvailability(Boolean(tab.url && isScysCourseUrl(tab.url)), Boolean(tab.url && isScysCourseUrl(tab.url)));
       }
     } catch (error) {
       setPageMeta(null);
       setStatus(error.message || "页面检测失败", "error");
       setButtonsDisabled(true);
-      setCourseExportAvailability(canExportCourse, false);
+      setCourseExportAvailability(Boolean(tab.url && isScysCourseUrl(tab.url)), false);
     }
   }
 
@@ -168,6 +192,7 @@ async function init() {
   }
 
   renderPrimarySurface();
+  renderCategoryWorkspace();
 }
 
 async function handleExport(format) {
@@ -253,9 +278,14 @@ async function handleBatchDownloadLinks() {
     }
   }
 
-  const links = parseBatchLinks(batchLinksInput.value);
+  const links = parseBatchLinks(batchLinksInput.value, activeCategory);
   if (links.length === 0) {
-    setBatchStatus("请至少粘贴一个受支持的文章链接。", "error");
+    setBatchStatus(
+      activeCategory === "wechat"
+        ? "请至少粘贴一个公众号文章链接。"
+        : "请至少粘贴一个飞书 docx/wiki 链接。",
+      "error"
+    );
     return;
   }
 
@@ -264,8 +294,8 @@ async function handleBatchDownloadLinks() {
       includeImages: includeImagesInput.checked,
       zipOutput: batchZipOutputInput.checked,
       outputTarget,
-      title: "批量下载链接列表",
-      source: "manual-links"
+      title: activeCategory === "wechat" ? "批量下载公众号文章" : "批量下载飞书文档",
+      source: activeCategory === "wechat" ? "manual-wechat-links" : "manual-feishu-links"
     });
     await openBatchRunner(job.id);
     setBatchStatus(`已打开批量任务页，共 ${job.links.length} 篇。后续下载会在任务页继续执行。`, "ready");
@@ -306,7 +336,7 @@ async function handleCourseExport() {
     setStatus(error.message || "专栏导出初始化失败", "error");
   } finally {
     setButtonsDisabled(false);
-    setCourseExportAvailability(true, true);
+    setCourseExportAvailability(courseExportVisible, courseExportVisible);
   }
 }
 
@@ -687,17 +717,16 @@ async function downloadWithFallback(url, filename, format, saveAs) {
 }
 
 function setButtonsDisabled(disabled) {
-  exportMarkdownButton.disabled = disabled;
-  primaryActionButton.disabled = disabled || !primaryActionModel.primaryAction;
-  if (!secondaryActionButton.hidden) {
-    secondaryActionButton.disabled = disabled || !primaryActionModel.secondaryAction;
-  }
+  actionButtonsLocked = disabled;
+  renderPrimarySurface();
+  renderCategoryWorkspace();
 }
 
 function setCourseExportAvailability(visible, enabled) {
-  exportCourseButton.hidden = !visible;
-  exportCourseButton.disabled = !enabled;
+  courseExportVisible = visible;
+  courseExportEnabled = enabled;
   renderPrimarySurface();
+  renderCategoryWorkspace();
 }
 
 function setBatchControlsDisabled(disabled) {
@@ -786,7 +815,6 @@ async function handleOutputTargetChange() {
       outputTarget = previousTarget;
       applyOutputTargetToInputs();
       await persistOutputTarget();
-      openAdvancedWorkspace();
       renderPrimarySurface();
       return;
     }
@@ -794,33 +822,7 @@ async function handleOutputTargetChange() {
 
   await persistOutputTarget();
   renderPrimarySurface();
-}
-
-function toggleAdvancedWorkspace() {
-  advancedExpanded = !advancedExpanded;
-  renderAdvancedWorkspace();
-}
-
-function openAdvancedWorkspace() {
-  if (advancedExpanded) {
-    return;
-  }
-  advancedExpanded = true;
-  renderAdvancedWorkspace();
-}
-
-function renderAdvancedWorkspace() {
-  if (advancedContentEl) {
-    advancedContentEl.hidden = !advancedExpanded;
-  }
-
-  const label = advancedExpanded ? "收起高级工作台" : "展开高级工作台";
-  if (toggleAdvancedButton) {
-    toggleAdvancedButton.textContent = label;
-  }
-  if (advancedToggleMirrorButton) {
-    advancedToggleMirrorButton.textContent = advancedExpanded ? "收起" : "展开";
-  }
+  renderCategoryWorkspace();
 }
 
 function renderPrimarySurface() {
@@ -828,7 +830,8 @@ function renderPrimarySurface() {
   primaryActionModel = buildPrimaryActionModel({
     isSupportedPage: Boolean(pageInfo?.supports?.includes?.("markdown")),
     isWechatMpBackend: pageInfo?.docType === "公众号后台",
-    canExportCourse: !exportCourseButton.hidden,
+    canExportCourse: courseExportVisible,
+    exportType: currentExportType,
     pageInfo
   });
 
@@ -841,16 +844,20 @@ function renderPrimarySurface() {
   if (primaryActionButton) {
     const action = primaryActionModel.primaryAction;
     primaryActionButton.hidden = !action;
-    primaryActionButton.disabled = !action;
+    primaryActionButton.disabled = actionButtonsLocked || !action || (action.key === "export-course" && !courseExportEnabled);
     primaryActionButton.textContent = action?.label || "当前页暂不支持";
     primaryActionButton.dataset.actionKey = action?.key || "";
   }
   if (secondaryActionButton) {
     const action = primaryActionModel.secondaryAction;
     secondaryActionButton.hidden = !action;
-    secondaryActionButton.disabled = !action;
+    secondaryActionButton.disabled = actionButtonsLocked || !action;
     secondaryActionButton.textContent = action?.label || "";
     secondaryActionButton.dataset.actionKey = action?.key || "";
+  }
+  if (detectedCategoryBadgeEl) {
+    const meta = getCategoryMeta(detectedCategory);
+    detectedCategoryBadgeEl.textContent = `已识别：${meta.label}`;
   }
   if (primaryHintEl) {
     const targetState = getActiveOutputTargetState();
@@ -871,6 +878,104 @@ function renderOutputTargetUi() {
   }
 }
 
+function getCategoryMeta(categoryKey) {
+  return getPopupCategories().find((item) => item.key === categoryKey) || { key: "other", label: "其它" };
+}
+
+function setActiveCategory(categoryKey) {
+  activeCategory = getCategoryMeta(categoryKey).key;
+  renderCategoryWorkspace();
+}
+
+function renderCategoryWorkspace() {
+  renderCategoryTabs();
+  renderBatchWorkspace();
+  renderScysWorkspace();
+  renderWechatWorkspace();
+  renderOtherWorkspace();
+}
+
+function renderCategoryTabs() {
+  categoryTabButtons.forEach((button, key) => {
+    if (!button) {
+      return;
+    }
+    const selected = key === activeCategory;
+    button.dataset.active = selected ? "true" : "false";
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+  });
+
+  if (categorySummaryEl) {
+    const detectedLabel = getCategoryMeta(detectedCategory).label;
+    const activeLabel = getCategoryMeta(activeCategory).label;
+    categorySummaryEl.textContent = detectedCategory === activeCategory
+      ? `已自动定位到“${detectedLabel}”分类。`
+      : `当前页归类为“${detectedLabel}”，你正在查看“${activeLabel}”工具区。`;
+  }
+}
+
+function renderBatchWorkspace() {
+  const showBatch = activeCategory === "wechat" || activeCategory === "feishu";
+  if (batchWorkspaceEl) {
+    batchWorkspaceEl.hidden = !showBatch;
+  }
+
+  if (!showBatch) {
+    return;
+  }
+
+  if (activeCategory === "wechat") {
+    batchWorkspaceTitleEl.textContent = "公众号文章批量下载";
+    batchWorkspaceSummaryEl.textContent = "粘贴多个公众号文章链接后，会打开独立任务页继续执行。";
+    batchLinksLabelEl.textContent = "公众号文章链接列表";
+    batchLinksInput.placeholder = "每行一个公众号文章链接。当前分类只会处理 mp.weixin.qq.com/s/... 链接。";
+    batchDownloadLinksButton.textContent = "批量下载公众号文章";
+  } else {
+    batchWorkspaceTitleEl.textContent = "飞书文档批量下载";
+    batchWorkspaceSummaryEl.textContent = "粘贴多个飞书 docx/wiki 链接后，会打开独立任务页继续执行。";
+    batchLinksLabelEl.textContent = "飞书链接列表";
+    batchLinksInput.placeholder = "每行一个飞书 docx/wiki 链接。当前分类只会处理飞书文档链接。";
+    batchDownloadLinksButton.textContent = "批量下载飞书文档";
+  }
+}
+
+function renderScysWorkspace() {
+  if (scysWorkspaceEl) {
+    scysWorkspaceEl.hidden = activeCategory !== "scys";
+  }
+
+  if (activeCategory !== "scys") {
+    return;
+  }
+
+  scysWorkspaceNoteEl.textContent = courseExportVisible
+    ? "当前已识别到生财课程章节。推荐优先导出整个专栏，必要时再单独导出当前章节。"
+    : "当前页不是生财课程章节。打开任一生财课程章节页后，这里会直接提供“导出当前专栏”。";
+  scysExportCourseButton.disabled = actionButtonsLocked || !courseExportEnabled;
+  scysExportCurrentButton.disabled = actionButtonsLocked || !Boolean(pageInfo?.supports?.includes?.("markdown")) || detectedCategory !== "scys";
+}
+
+function renderWechatWorkspace() {
+  if (wechatWorkspaceEl) {
+    wechatWorkspaceEl.hidden = activeCategory !== "wechat";
+  }
+}
+
+function renderOtherWorkspace() {
+  if (otherWorkspaceEl) {
+    otherWorkspaceEl.hidden = activeCategory !== "other";
+  }
+
+  if (activeCategory !== "other") {
+    return;
+  }
+
+  const supported = Boolean(pageInfo?.supports?.includes?.("markdown"));
+  otherWorkspaceNoteEl.textContent = supported
+    ? "当前页是普通网页正文，上方主按钮可以直接导出 Markdown。"
+    : "当前页暂不支持直接导出。你仍可切换到其它分类使用对应的批量工具。";
+}
+
 async function handlePrimaryAction() {
   const actionKey = primaryActionButton.dataset.actionKey;
   await handleActionByKey(actionKey);
@@ -889,8 +994,9 @@ async function handleActionByKey(actionKey) {
     case "export-course":
       await handleCourseExport();
       break;
-    case "open-advanced":
-      openAdvancedWorkspace();
+    case "focus-wechat-history":
+      setActiveCategory("wechat");
+      focusElement(helperSeedUrlInput);
       break;
     default:
       break;
@@ -1119,13 +1225,37 @@ function forceStripWechatNoiseTail(value) {
   return text.slice(0, start).replace(/\s+$/g, "");
 }
 
-function parseBatchLinks(value) {
-  return normalizeSupportedLinks(
+function parseBatchLinks(value, categoryKey = activeCategory) {
+  return normalizeSupportedLinksForCategory(
     String(value || "")
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .filter(Boolean)
+      .filter(Boolean),
+    categoryKey
   );
+}
+
+function normalizeSupportedLinksForCategory(values, categoryKey = activeCategory) {
+  const expectedType = categoryKey === "wechat"
+    ? "wechat"
+    : categoryKey === "feishu"
+      ? "feishu"
+      : "";
+  const unique = new Set();
+  const result = [];
+
+  for (const value of values || []) {
+    const link = String(value || "").trim();
+    const exportType = classifyExportUrl(link);
+    if (!link || !isBatchExportUrl(link) || (expectedType && exportType !== expectedType) || unique.has(link)) {
+      continue;
+    }
+
+    unique.add(link);
+    result.push(link);
+  }
+
+  return result;
 }
 
 function normalizeSupportedLinks(values) {
@@ -1143,6 +1273,19 @@ function normalizeSupportedLinks(values) {
   }
 
   return result;
+}
+
+function focusElement(element) {
+  if (!element) {
+    return;
+  }
+
+  if (typeof element.scrollIntoView === "function") {
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  if (typeof element.focus === "function") {
+    element.focus({ preventScroll: true });
+  }
 }
 
 function normalizeDownloadFilename(filename, format) {

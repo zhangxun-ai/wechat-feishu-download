@@ -1,0 +1,120 @@
+<h2>文档 + Obsidian：哪种融合方式更对？</h2>
+<p class="subtitle">目标不是直接贴一个 Obsidian Logo，而是保留“文档导出”的主体，同时加入一点 Vault / Monolith / Cave 的识别感。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#fbf5ea; display:flex; align-items:center; justify-content:center; min-height:220px;">
+      <svg viewBox="0 0 240 240" width="210" height="210" aria-hidden="true">
+        <defs>
+          <linearGradient id="docA" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#f0a446"/>
+            <stop offset="100%" stop-color="#9b4416"/>
+          </linearGradient>
+        </defs>
+        <rect x="54" y="28" width="126" height="172" rx="20" fill="#4b2414"/>
+        <path d="M66 18h108c12 0 22 10 22 22v150c0 12-10 22-22 22H66c-12 0-22-10-22-22V40c0-12 10-22 22-22z" fill="url(#docA)"/>
+        <path d="M152 18h22c12 0 22 10 22 22v22c-4-2-8-3-12-3-18 0-32 14-32 32V18z" fill="#f8c67b"/>
+        <path d="M98 96c0-16 13-29 29-29h17v36c0 11 8 19 19 19h33v18c0 4-3 8-8 8h-23c-8 0-16 3-21 9l-14 17c-3 4-9 4-12 0l-14-17c-5-6-13-9-21-9H60c-5 0-8-4-8-8v-18h33c11 0 19-8 19-19V96z" fill="#4b2414"/>
+      </svg>
+    </div>
+    <div class="card-body">
+      <h3>A. Vault 门洞</h3>
+      <p>主对象仍是文档，底部做一个“Vault 入口 / 洞口”感的 inward cut。功能读起来还是文档，但会多一层 Obsidian 的“收纳进知识库”感觉。</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>优点</h4>
+          <ul>
+            <li>文档语义最稳</li>
+            <li>Obsidian 气质有了，但不直白</li>
+            <li>适合缩小到插件尺寸</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>风险</h4>
+          <ul>
+            <li>如果门洞太大，会像通用文件管理器</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#fbf5ea; display:flex; align-items:center; justify-content:center; min-height:220px;">
+      <svg viewBox="0 0 240 240" width="210" height="210" aria-hidden="true">
+        <defs>
+          <linearGradient id="docB" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#f0a446"/>
+            <stop offset="100%" stop-color="#8a3714"/>
+          </linearGradient>
+        </defs>
+        <rect x="58" y="28" width="124" height="170" rx="20" fill="#4b2414"/>
+        <path d="M70 18h100c14 0 26 12 26 26v146c0 14-12 26-26 26H70c-14 0-26-12-26-26V44c0-14 12-26 26-26z" fill="url(#docB)"/>
+        <path d="M152 18h18c14 0 26 12 26 26v18c-5-3-10-4-15-4-16 0-29 13-29 29V18z" fill="#f8c67b"/>
+        <path d="M104 122l22-33 12 17 16-12 0 74h-68z" fill="#4b2414"/>
+        <path d="M76 170c16-6 30-18 40-34 8 10 18 18 30 24-16 8-32 12-48 12-10 0-18-1-22-2z" fill="#4b2414"/>
+      </svg>
+    </div>
+    <div class="card-body">
+      <h3>B. Monolith 切面</h3>
+      <p>文档内部嵌入一个更像 Obsidian monolith 的暗色切面，强调“导出后沉淀进知识库”。比 A 更有品牌感，但抽象度也更高。</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>优点</h4>
+          <ul>
+            <li>更有高端产品气质</li>
+            <li>不会落入下载箭头套路</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>风险</h4>
+          <ul>
+            <li>做不好会看不懂和 Obsidian 的关系</li>
+            <li>小尺寸可能丢细节</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#fbf5ea; display:flex; align-items:center; justify-content:center; min-height:220px;">
+      <svg viewBox="0 0 240 240" width="210" height="210" aria-hidden="true">
+        <defs>
+          <linearGradient id="docC" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#f0a446"/>
+            <stop offset="100%" stop-color="#9b4416"/>
+          </linearGradient>
+        </defs>
+        <path d="M72 34h92c14 0 24 10 24 24v132c0 14-10 24-24 24H72c-14 0-24-10-24-24V58c0-14 10-24 24-24z" fill="url(#docC)"/>
+        <path d="M146 34h18c14 0 24 10 24 24v18c-4-2-8-3-12-3-16 0-30 14-30 30V34z" fill="#f8c67b"/>
+        <path d="M40 172c0-18 14-32 32-32h28c14 0 24 10 24 24v22c0 8 6 14 14 14h30c18 0 32-14 32-32v22c0 18-14 32-32 32H72c-18 0-32-14-32-32v-18z" fill="#4b2414"/>
+      </svg>
+    </div>
+    <div class="card-body">
+      <h3>C. Vault 基座</h3>
+      <p>文档坐在一个 Obsidian 式暗色基座上，传达“导出到 Vault”。功能可读性不错，但更像“页面 + 底座”的构图。</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>优点</h4>
+          <ul>
+            <li>最好理解“导出到某处”</li>
+            <li>保留文档主体</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>风险</h4>
+          <ul>
+            <li>容易变成普通归档图标</li>
+            <li>品牌感弱于 A / B</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <p class="label">我的建议</p>
+  <p>先选 <strong>A</strong> 或 <strong>B</strong>。A 更稳、更像插件；B 更高级、更像品牌，但要再控制抽象度。</p>
+</div>

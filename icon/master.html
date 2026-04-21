@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档本地导出 - Icon Master</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 1024px;
+        height: 1024px;
+        overflow: hidden;
+      }
+
+      body {
+        background:
+          radial-gradient(circle at 24% 18%, rgba(139, 91, 47, 0.55), transparent 38%),
+          radial-gradient(circle at 72% 76%, rgba(58, 24, 13, 0.28), transparent 40%),
+          linear-gradient(180deg, #603516 0%, #251107 100%);
+      }
+
+      svg {
+        display: block;
+        width: 1024px;
+        height: 1024px;
+      }
+    </style>
+  </head>
+  <body>
+    <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="文档本地导出图标母版">
+      <defs>
+        <linearGradient id="backPlate" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#d98a3e"/>
+          <stop offset="100%" stop-color="#b66428"/>
+        </linearGradient>
+        <linearGradient id="pageFill" x1="0.05" y1="0.08" x2="0.88" y2="0.92">
+          <stop offset="0%" stop-color="#f2b15f"/>
+          <stop offset="42%" stop-color="#d88739"/>
+          <stop offset="100%" stop-color="#a85320"/>
+        </linearGradient>
+        <linearGradient id="foldOuter" x1="0.2" y1="0.2" x2="0.9" y2="0.95">
+          <stop offset="0%" stop-color="#141519"/>
+          <stop offset="35%" stop-color="#25151b"/>
+          <stop offset="100%" stop-color="#4a170d"/>
+        </linearGradient>
+        <linearGradient id="foldHighlight" x1="0.1" y1="0.1" x2="0.9" y2="0.9">
+          <stop offset="0%" stop-color="#f2be74" stop-opacity="0.95"/>
+          <stop offset="56%" stop-color="#b16f38" stop-opacity="0.68"/>
+          <stop offset="100%" stop-color="#101116" stop-opacity="0.1"/>
+        </linearGradient>
+        <filter id="softShadow" x="-20%" y="-20%" width="140%" height="160%">
+          <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#120803" flood-opacity="0.28"/>
+        </filter>
+        <filter id="curlShadow" x="-20%" y="-20%" width="160%" height="180%">
+          <feDropShadow dx="12" dy="18" stdDeviation="18" flood-color="#110702" flood-opacity="0.32"/>
+        </filter>
+      </defs>
+
+      <g filter="url(#softShadow)">
+        <rect x="660" y="152" width="132" height="742" rx="8" fill="url(#backPlate)"/>
+      </g>
+
+      <g filter="url(#softShadow)">
+        <rect x="236" y="142" width="528" height="760" rx="34" fill="url(#pageFill)"/>
+        <rect x="250" y="146" width="24" height="740" rx="12" fill="#cf7b31" opacity="0.72"/>
+      </g>
+
+      <g filter="url(#curlShadow)">
+        <path
+          d="M520 690
+             C640 682 712 648 754 590
+             C794 536 814 444 816 306
+             V178
+             C816 162 828 150 844 150
+             H924
+             V894
+             H714
+             C684 894 659 883 642 860
+             C618 827 604 778 592 728
+             C580 718 562 704 520 690
+             Z"
+          fill="url(#foldOuter)"
+        />
+
+        <path
+          d="M470 692
+             C560 686 646 670 714 632
+             C786 592 828 512 836 376
+             V204
+             C836 182 852 166 874 166
+             H888
+             V196
+             C888 430 864 586 786 678
+             C728 747 644 786 532 800
+             C504 804 486 786 479 756
+             C474 734 472 714 470 692
+             Z"
+          fill="url(#foldHighlight)"
+          opacity="0.9"
+        />
+
+        <path
+          d="M410 650
+             L520 650
+             C518 734 514 812 500 850
+             C489 880 469 896 438 902
+             H404
+             Z"
+          fill="#1a120d"
+          opacity="0.85"
+        />
+      </g>
+    </svg>
+  </body>
+</html>
