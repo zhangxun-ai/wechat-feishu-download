@@ -5,6 +5,23 @@
     { key: "scys", label: "生财有术" },
     { key: "other", label: "其它" }
   ]);
+  const POPUP_PRESETS = Object.freeze([
+    {
+      key: "quick-export",
+      label: "快速导出",
+      description: "下载并保留图片，适合留档"
+    },
+    {
+      key: "ai-ready",
+      label: "发给 AI",
+      description: "Markdown 无图，适合分析"
+    },
+    {
+      key: "obsidian",
+      label: "存到 Obsidian",
+      description: "直接写入 Vault"
+    }
+  ]);
   const OUTPUT_TARGET_LABELS = {
     download: "仅下载",
     both: "下载 + Obsidian",
@@ -13,6 +30,10 @@
 
   function getPopupCategories() {
     return POPUP_CATEGORIES.map((item) => ({ ...item }));
+  }
+
+  function getPopupPresets() {
+    return POPUP_PRESETS.map((item) => ({ ...item }));
   }
 
   function resolvePopupCategory(input = {}) {
@@ -53,6 +74,25 @@
       wantsObsidian: key !== "download",
       label: OUTPUT_TARGET_LABELS[key]
     };
+  }
+
+  function resolvePopupPresetState(input = {}) {
+    const outputTarget = normalizeOutputTarget(input.outputTarget, "download");
+    const includeImages = input.includeImages !== false;
+
+    if (outputTarget === "obsidian") {
+      return { key: "obsidian", label: "存到 Obsidian" };
+    }
+
+    if (outputTarget === "download" && includeImages === false) {
+      return { key: "ai-ready", label: "发给 AI" };
+    }
+
+    if (outputTarget === "download") {
+      return { key: "quick-export", label: "快速导出" };
+    }
+
+    return { key: "custom", label: "自定义组合" };
   }
 
   function buildPrimaryActionModel(input = {}) {
@@ -149,7 +189,9 @@
 
   const api = {
     getPopupCategories,
+    getPopupPresets,
     resolvePopupCategory,
+    resolvePopupPresetState,
     normalizeOutputTarget,
     getOutputTargetState,
     buildPrimaryActionModel

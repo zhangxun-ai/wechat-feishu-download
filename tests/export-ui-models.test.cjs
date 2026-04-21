@@ -1,7 +1,9 @@
 const assert = require("node:assert/strict");
 const {
   getPopupCategories,
+  getPopupPresets,
   resolvePopupCategory,
+  resolvePopupPresetState,
   normalizeOutputTarget,
   getOutputTargetState,
   buildPrimaryActionModel
@@ -26,6 +28,17 @@ async function main() {
     assert.deepEqual(
       getPopupCategories().map((item) => item.label),
       ["微信公众号", "飞书", "生财有术", "其它"]
+    );
+  });
+
+  await test("lists popup presets in the expected workbench order", async () => {
+    assert.deepEqual(
+      getPopupPresets().map((item) => item.key),
+      ["quick-export", "ai-ready", "obsidian"]
+    );
+    assert.deepEqual(
+      getPopupPresets().map((item) => item.label),
+      ["快速导出", "发给 AI", "存到 Obsidian"]
     );
   });
 
@@ -99,6 +112,25 @@ async function main() {
       wantsObsidian: true,
       label: "仅 Obsidian"
     });
+  });
+
+  await test("resolves popup preset state from output target and image choice", async () => {
+    assert.deepEqual(
+      resolvePopupPresetState({ outputTarget: "download", includeImages: true }),
+      { key: "quick-export", label: "快速导出" }
+    );
+    assert.deepEqual(
+      resolvePopupPresetState({ outputTarget: "download", includeImages: false }),
+      { key: "ai-ready", label: "发给 AI" }
+    );
+    assert.deepEqual(
+      resolvePopupPresetState({ outputTarget: "obsidian", includeImages: true }),
+      { key: "obsidian", label: "存到 Obsidian" }
+    );
+    assert.deepEqual(
+      resolvePopupPresetState({ outputTarget: "both", includeImages: true }),
+      { key: "custom", label: "自定义组合" }
+    );
   });
 
   await test("builds course-first primary action for SCYS course pages", async () => {

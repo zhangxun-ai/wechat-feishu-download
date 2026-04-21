@@ -9,8 +9,11 @@
   const WECHAT_MP_LOGIN_URL = "https://mp.weixin.qq.com/";
   const stripWechatUiNoiseFromMarkdown = globalThis.WechatMarkdownCleanup?.stripWechatUiNoiseFromMarkdown || ((value) => value);
   const scysCourseUtils = globalThis.ScysCourseUtils || {};
+  const webMarkdownUtils = globalThis.WebMarkdownUtils || {};
   const isScysCourseParsedUrl = (parsed) => scysCourseUtils.isScysCourseParsedUrl?.(parsed) || false;
   const normalizeScysCourseEntries = (entries, baseUrl) => scysCourseUtils.normalizeScysCourseEntries?.(entries, baseUrl) || [];
+  const joinInlineFragments = (fragments) => webMarkdownUtils.joinInlineFragments?.(fragments) || fragments.filter(Boolean).join("");
+  const formatReadableMarkdown = (markdown, options) => webMarkdownUtils.formatReadableMarkdown?.(markdown, options) || markdown;
   const WECHAT_MP_SEARCH_COUNT = 10;
   const WECHAT_MP_ARTICLE_PAGE_SIZE = 5;
   const WECHAT_MP_CANDIDATE_LIMIT = 6;
@@ -848,6 +851,10 @@
       markdownBody = stripMarkdownImages(markdownBody);
     }
 
+    markdownBody = formatReadableMarkdown(markdownBody, {
+      siteHint: getGenericReadableSiteHint(location.hostname)
+    });
+
     if (!markdownBody) {
       throw new Error("未提取到网页正文");
     }
@@ -909,6 +916,15 @@
       author,
       publishTime
     };
+  }
+
+  function getGenericReadableSiteHint(hostname) {
+    const normalized = String(hostname || "").toLowerCase();
+    if (normalized === "x.com" || normalized.endsWith(".x.com") || normalized === "twitter.com" || normalized.endsWith(".twitter.com")) {
+      return "x";
+    }
+
+    return "generic";
   }
 
   function getGenericExportRoot() {
@@ -3467,10 +3483,8 @@
   }
 
   function convertInlineChildren(node) {
-    return cleanupInline(
-      Array.from(node.childNodes)
-        .map((child) => convertInline(child))
-        .join("")
+    return joinInlineFragments(
+      Array.from(node.childNodes).map((child) => convertInline(child))
     );
   }
 
@@ -3533,7 +3547,7 @@
       inlineParts.push(convertInline(child));
     }
 
-    const head = cleanupInline(inlineParts.join("")) || " ";
+    const head = joinInlineFragments(inlineParts) || " ";
     const tail = nestedLists
       .map((list) => listToMarkdown(list, depth + 1))
       .filter(Boolean)

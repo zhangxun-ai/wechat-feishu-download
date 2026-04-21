@@ -1,0 +1,109 @@
+<h2>新版弹窗方向</h2>
+<p class="subtitle">目标不变：功能不减，只把页面做得更干净、更快、更高级。请看这 3 个方向，选一个最接近你想要的气质。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. 聚焦操作台</div>
+        <div class="mockup-body" style="display:grid;gap:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#7d6b54">
+            <span>生财有术</span>
+            <span>已识别课程页</span>
+          </div>
+          <div style="padding:16px;border-radius:18px;background:#fff7ec;border:1px solid rgba(142,110,61,.12);display:grid;gap:10px">
+            <div style="font-size:22px;font-weight:700;color:#2b2014;line-height:1.2">导出当前专栏</div>
+            <div style="font-size:12px;color:#6f6252;line-height:1.6">标题、分类、导出目标都收敛到一块，只保留最核心动作。</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+              <div style="padding:12px;border-radius:14px;background:linear-gradient(180deg,#d98616,#c66e0f);color:#fff8ef;text-align:center;font-weight:700">主按钮</div>
+              <div style="padding:12px;border-radius:14px;background:#fffdf8;border:1px solid rgba(142,110,61,.16);text-align:center;color:#5b4727;font-weight:600">次操作</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+            <div style="padding:10px;border-radius:12px;background:#fffaf1;border:1px solid rgba(142,110,61,.12);font-size:11px;text-align:center">快速导出</div>
+            <div style="padding:10px;border-radius:12px;background:#fffaf1;border:1px solid rgba(142,110,61,.12);font-size:11px;text-align:center">发给 AI</div>
+            <div style="padding:10px;border-radius:12px;background:#fffaf1;border:1px solid rgba(142,110,61,.12);font-size:11px;text-align:center">存到 Obsidian</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>聚焦操作台</h3>
+      <p>首屏只有一个主任务区。最快、最干净、最强调效率。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. 分类工作台</div>
+        <div class="mockup-body" style="display:grid;gap:12px">
+          <div style="display:flex;gap:8px">
+            <div style="padding:8px 12px;border-radius:999px;background:#f4e4c4;color:#8a5a16;font-size:11px;font-weight:700">公众号</div>
+            <div style="padding:8px 12px;border-radius:999px;background:#fffdf8;border:1px solid rgba(142,110,61,.12);font-size:11px">飞书</div>
+            <div style="padding:8px 12px;border-radius:999px;background:#fffdf8;border:1px solid rgba(142,110,61,.12);font-size:11px">生财</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1.2fr .8fr;gap:10px">
+            <div style="padding:14px;border-radius:16px;background:#fff7ec;border:1px solid rgba(142,110,61,.12);display:grid;gap:10px">
+              <div style="font-size:18px;font-weight:700;color:#2b2014">当前页主操作</div>
+              <div style="font-size:12px;color:#6f6252;line-height:1.6">识别结果、标题、主按钮放在左边主体区。</div>
+              <div style="padding:12px;border-radius:14px;background:linear-gradient(180deg,#d98616,#c66e0f);color:#fff8ef;text-align:center;font-weight:700">导出当前页面</div>
+            </div>
+            <div style="padding:14px;border-radius:16px;background:#fffaf1;border:1px solid rgba(142,110,61,.12);display:grid;gap:8px">
+              <div style="font-size:12px;color:#856f4e">当前预设</div>
+              <div style="font-weight:700;color:#3a2a16">发给 AI</div>
+              <div style="font-size:12px;color:#6f6252">Markdown 无图</div>
+              <div style="margin-top:6px;font-size:12px;color:#856f4e">Obsidian</div>
+              <div style="font-size:12px;color:#3a2a16">Local Export</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>分类工作台</h3>
+      <p>顶部分类导航保留，但整页更稳，更像专业工具面板。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C. 极简面板</div>
+        <div class="mockup-body" style="display:grid;gap:12px">
+          <div style="font-size:12px;color:#7d6b54">当前页：公众号文章</div>
+          <div style="font-size:26px;font-weight:700;color:#22190f;line-height:1.15">导出当前网页</div>
+          <div style="font-size:12px;color:#6f6252;line-height:1.7">把大部分配置折叠到“更多设置”，默认几乎不解释，只保留操作。</div>
+          <div style="padding:13px;border-radius:14px;background:linear-gradient(180deg,#d98616,#c66e0f);color:#fff8ef;text-align:center;font-weight:700">立即导出</div>
+          <div style="display:flex;gap:8px">
+            <div style="padding:8px 10px;border-radius:999px;background:#fff7ec;border:1px solid rgba(142,110,61,.12);font-size:11px">下载</div>
+            <div style="padding:8px 10px;border-radius:999px;background:#fff7ec;border:1px solid rgba(142,110,61,.12);font-size:11px">Obsidian</div>
+            <div style="padding:8px 10px;border-radius:999px;background:#fff7ec;border:1px solid rgba(142,110,61,.12);font-size:11px">带图</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>极简面板</h3>
+      <p>视觉最轻，最像系统级小工具，但扩展性相对最弱。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>我的建议</h4>
+      <ul>
+        <li><strong>首选 B</strong>：兼顾分类管理、专业感和后续扩展。</li>
+        <li><strong>次选 A</strong>：如果你最重视一眼就能点，A 会更利落。</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>不建议直接走</h4>
+      <ul>
+        <li><strong>C</strong> 太克制，容易把插件已有能力藏得过深。</li>
+      </ul>
+    </div>
+  </div>
+</div>

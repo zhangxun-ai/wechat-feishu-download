@@ -43,6 +43,13 @@ const successEl = document.getElementById("jobSuccess");
 const failureEl = document.getElementById("jobFailure");
 const workersEl = document.getElementById("jobWorkers");
 const elapsedEl = document.getElementById("jobElapsed");
+const resultSummaryEl = document.getElementById("resultSummary");
+const resultListEl = document.getElementById("resultList");
+const showResultDetailsButton = document.getElementById("showResultDetails");
+const showWorkerDetailsButton = document.getElementById("showWorkerDetails");
+const showLogDetailsButton = document.getElementById("showLogDetails");
+const workerDetailsEl = document.getElementById("workerDetails");
+const logDetailsEl = document.getElementById("logDetails");
 const workerPanelEl = document.getElementById("workerPanel");
 const workerGridEl = document.getElementById("workerGrid");
 const logEl = document.getElementById("jobLog");
@@ -53,8 +60,28 @@ let workerStates = [];
 let pendingObsidianRetry = null;
 let cachedObsidianBinding = null;
 let cachedObsidianBindingPromise = null;
+const resultEntryCache = new Set();
 
 retryObsidianWriteButton?.addEventListener("click", handleRetryObsidianWrite);
+showResultDetailsButton?.addEventListener("click", () => {
+  if (resultSummaryEl?.hidden === false) {
+    resultSummaryEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    return;
+  }
+  logDetailsEl?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+});
+showWorkerDetailsButton?.addEventListener("click", () => {
+  if (workerDetailsEl) {
+    workerDetailsEl.open = true;
+    workerDetailsEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+});
+showLogDetailsButton?.addEventListener("click", () => {
+  if (logDetailsEl) {
+    logDetailsEl.open = true;
+    logDetailsEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+});
 
 init().catch((error) => {
   setStatus(error.message || "任务初始化失败", "error");
@@ -756,7 +783,7 @@ function injectContentScript(tabId) {
     chrome.scripting.executeScript(
       {
         target: { tabId },
-        files: ["shared/scys-course-utils.js", "content-scripts/feishu-exporter.js"]
+        files: ["shared/scys-course-utils.js", "shared/web-markdown-utils.js", "content-scripts/feishu-exporter.js"]
       },
       () => {
         if (chrome.runtime.lastError) {
@@ -1279,11 +1306,17 @@ function renderWorkerPanel() {
 
   if (workerStates.length === 0) {
     workerPanelEl.hidden = true;
+    if (workerDetailsEl) {
+      workerDetailsEl.hidden = true;
+    }
     workerGridEl.innerHTML = "";
     return;
   }
 
   workerPanelEl.hidden = false;
+  if (workerDetailsEl) {
+    workerDetailsEl.hidden = false;
+  }
   workerGridEl.innerHTML = workerStates.map((worker) => {
     const detailClass = /^(尚未开始|等待其他通道完成)$/u.test(worker.detail) ? "worker-copy worker-copy-idle" : "worker-copy";
     return [
@@ -1345,6 +1378,32 @@ function appendLog(message, variant = "") {
   entry.className = `log-entry${variant ? ` log-entry-${variant}` : ""}`;
   entry.textContent = message;
   logEl.prepend(entry);
+  appendResultEntryFromLog(message, variant);
+}
+
+function appendResultEntryFromLog(message, variant = "") {
+  if (!resultSummaryEl || !resultListEl) {
+    return;
+  }
+
+  const text = String(message || "").trim();
+  if (!text) {
+    return;
+  }
+
+  const shouldPromote = variant === "success"
+    && /^(已下载:|ZIP 已生成:|已写入 Obsidian：|Obsidian 补写成功)/u.test(text);
+
+  if (!shouldPromote || resultEntryCache.has(text)) {
+    return;
+  }
+
+  resultEntryCache.add(text);
+  resultSummaryEl.hidden = false;
+  const entry = document.createElement("div");
+  entry.className = `result-entry${variant ? ` result-entry-${variant}` : ""}`;
+  entry.textContent = text;
+  resultListEl.prepend(entry);
 }
 
 function uniquifyZipEntryName(filename, usedNames) {

@@ -13,7 +13,12 @@ const isWechatMpBackendUrl = (url) => exportUrlUtils.isWechatMpBackendUrl?.(url)
 const isScysCourseUrl = (url) => exportUrlUtils.isScysCourseUrl?.(url) || false;
 const buildObsidianNoteFile = (payload) => obsidianExportApi.buildObsidianNoteFile?.(payload);
 const getPopupCategories = () => exportUiModels.getPopupCategories?.() || [];
+const getPopupPresets = () => exportUiModels.getPopupPresets?.() || [];
 const resolvePopupCategory = (value) => exportUiModels.resolvePopupCategory?.(value) || "other";
+const resolvePopupPresetState = (value) => exportUiModels.resolvePopupPresetState?.(value) || {
+  key: "custom",
+  label: "自定义组合"
+};
 const normalizeOutputTarget = (value, fallback) => exportUiModels.normalizeOutputTarget?.(value, fallback) || "download";
 const getOutputTargetState = (value) => exportUiModels.getOutputTargetState?.(value) || {
   key: "download",
@@ -54,6 +59,7 @@ const wechatWorkspaceEl = document.getElementById("wechatWorkspace");
 const otherWorkspaceEl = document.getElementById("otherWorkspace");
 const otherWorkspaceNoteEl = document.getElementById("otherWorkspaceNote");
 const includeImagesInput = document.getElementById("includeImages");
+const presetSummaryEl = document.getElementById("presetSummary");
 const outputTargetDownloadInput = document.getElementById("outputTargetDownload");
 const outputTargetBothInput = document.getElementById("outputTargetBoth");
 const outputTargetObsidianInput = document.getElementById("outputTargetObsidian");
@@ -78,6 +84,7 @@ const helperCheckButton = document.getElementById("helperCheck");
 const openWechatMpLoginButton = document.getElementById("openWechatMpLogin");
 const helperDownloadButton = document.getElementById("helperDownload");
 const helperLogEl = document.getElementById("helperLog");
+const presetButtons = Array.from(document.querySelectorAll(".preset-card[data-preset]"));
 const categoryTabButtons = new Map(
   getPopupCategories().map((item) => [
     item.key,
@@ -120,6 +127,9 @@ includeImagesHelperInput.addEventListener("change", () => syncIncludeImages(fals
 outputTargetInputs.forEach((input) => input.addEventListener("change", handleOutputTargetChange));
 pickObsidianFolderButton.addEventListener("click", handlePickObsidianFolder);
 clearObsidianFolderButton.addEventListener("click", handleClearObsidianFolder);
+presetButtons.forEach((button) => {
+  button.addEventListener("click", () => handlePresetSelection(button.dataset.preset || ""));
+});
 categoryTabButtons.forEach((button, key) => {
   button?.addEventListener("click", () => setActiveCategory(key));
 });
@@ -547,7 +557,7 @@ function injectContentScript(tabId) {
     chrome.scripting.executeScript(
       {
         target: { tabId },
-        files: ["shared/scys-course-utils.js", "content-scripts/feishu-exporter.js"]
+        files: ["shared/scys-course-utils.js", "shared/web-markdown-utils.js", "content-scripts/feishu-exporter.js"]
       },
       () => {
         if (chrome.runtime.lastError) {
@@ -827,6 +837,7 @@ async function handleOutputTargetChange() {
 
 function renderPrimarySurface() {
   renderOutputTargetUi();
+  renderPresetUi();
   primaryActionModel = buildPrimaryActionModel({
     isSupportedPage: Boolean(pageInfo?.supports?.includes?.("markdown")),
     isWechatMpBackend: pageInfo?.docType === "公众号后台",
@@ -876,6 +887,90 @@ function renderOutputTargetUi() {
   if (batchZipOutputInput) {
     batchZipOutputInput.disabled = !targetState.wantsDownload || isWechatHistoryRunning;
   }
+}
+
+function renderPresetUi() {
+  const presetState = resolvePopupPresetState({
+    outputTarget,
+    includeImages: includeImagesInput.checked
+  });
+  const presetMeta = new Map(getPopupPresets().map((item) => [item.key, item]));
+
+  presetButtons.forEach((button) => {
+    const key = button.dataset.preset || "";
+    const active = key === presetState.key;
+    button.dataset.active = active ? "true" : "false";
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+
+  if (!presetSummaryEl) {
+    return;
+  }
+
+  if (presetState.key === "custom") {
+    presetSummaryEl.textContent = "当前组合来自“更多设置”，仍保留全部导出能力。";
+    return;
+  }
+
+  const meta = presetMeta.get(presetState.key);
+  presetSummaryEl.textContent = meta?.description
+    ? `当前预设：${presetState.label} · ${meta.description}`
+    : `当前预设：${presetState.label}`;
+}
+
+async function handlePresetSelection(presetKey) {
+  const previousTarget = outputTarget;
+  const previousIncludeImages = includeImagesInput.checked;
+  let nextTarget = outputTarget;
+  let nextIncludeImages = includeImagesInput.checked;
+
+  switch (presetKey) {
+    case "quick-export":
+      nextTarget = "download";
+      nextIncludeImages = true;
+      break;
+    case "ai-ready":
+      nextTarget = "download";
+      nextIncludeImages = false;
+      break;
+    case "obsidian":
+      nextTarget = "obsidian";
+      nextIncludeImages = true;
+      break;
+    default:
+      return;
+  }
+
+  const changed = nextTarget !== outputTarget || nextIncludeImages !== includeImagesInput.checked;
+  if (!changed) {
+    renderPrimarySurface();
+    return;
+  }
+
+  outputTarget = nextTarget;
+  includeImagesInput.checked = nextIncludeImages;
+  includeImagesHelperInput.checked = nextIncludeImages;
+  applyOutputTargetToInputs();
+  renderPrimarySurface();
+  renderCategoryWorkspace();
+
+  if (wantsObsidian()) {
+    const ready = await ensureObsidianReadyIfNeeded();
+    if (!ready) {
+      outputTarget = previousTarget;
+      includeImagesInput.checked = previousIncludeImages;
+      includeImagesHelperInput.checked = previousIncludeImages;
+      applyOutputTargetToInputs();
+      renderPrimarySurface();
+      renderCategoryWorkspace();
+      await persistOutputTarget();
+      return;
+    }
+  }
+
+  await persistOutputTarget();
+  renderPrimarySurface();
+  renderCategoryWorkspace();
 }
 
 function getCategoryMeta(categoryKey) {
@@ -1454,4 +1549,6 @@ function syncIncludeImages(fromPrimary) {
   const checked = fromPrimary ? includeImagesInput.checked : includeImagesHelperInput.checked;
   includeImagesInput.checked = checked;
   includeImagesHelperInput.checked = checked;
+  renderPrimarySurface();
+  renderCategoryWorkspace();
 }

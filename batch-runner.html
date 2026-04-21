@@ -14,8 +14,9 @@
         <p id="jobMeta" class="subtitle">正在准备任务…</p>
       </header>
 
-      <section class="panel">
+      <section id="summaryPanel" class="panel summary-panel">
         <div id="jobStatus" class="status status-loading">正在读取任务数据…</div>
+
         <div id="obsidianRetryPanel" class="retry-panel" hidden>
           <div class="panel-headline">Obsidian 重试</div>
           <p id="obsidianRetryCopy" class="retry-copy">当前任务已导出完成，但写入 Obsidian 失败。</p>
@@ -23,6 +24,18 @@
             <button id="retryObsidianWrite" class="retry-button">授权并重试写入 Obsidian</button>
           </div>
         </div>
+
+        <div id="resultActions" class="result-actions">
+          <button id="showResultDetails" class="button button-subtle" type="button">查看导出结果</button>
+          <button id="showWorkerDetails" class="button button-subtle detailsToggle" type="button">查看并行通道</button>
+          <button id="showLogDetails" class="button button-subtle detailsToggle" type="button">查看详细日志</button>
+        </div>
+
+        <div id="resultSummary" class="result-summary" hidden>
+          <div class="panel-headline">导出结果</div>
+          <div id="resultList" class="result-list"></div>
+        </div>
+
         <div class="stats">
           <div class="stat-card">
             <span class="stat-label">进度</span>
@@ -45,12 +58,19 @@
             <span id="jobElapsed" class="stat-value">00:00</span>
           </div>
         </div>
+      </section>
+
+      <details id="workerDetails" class="panel detail-card" hidden>
+        <summary class="detail-toggle">并行通道</summary>
         <div id="workerPanel" class="worker-panel" hidden>
-          <div class="panel-headline">并行通道</div>
           <div id="workerGrid" class="worker-grid"></div>
         </div>
+      </details>
+
+      <details id="logDetails" class="panel detail-card detail-card-log">
+        <summary class="detail-toggle">详细日志</summary>
         <div id="jobLog" class="log" aria-live="polite"></div>
-      </section>
+      </details>
     </main>
 
     <script src="shared/export-url-utils.js"></script>
