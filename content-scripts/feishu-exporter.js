@@ -11,6 +11,7 @@
   const scysCourseUtils = globalThis.ScysCourseUtils || {};
   const webMarkdownUtils = globalThis.WebMarkdownUtils || {};
   const isScysCourseParsedUrl = (parsed) => scysCourseUtils.isScysCourseParsedUrl?.(parsed) || false;
+  const extractScysCourseApiTitle = (payload) => scysCourseUtils.extractScysCourseApiTitle?.(payload) || "";
   const flattenScysCourseApiChapters = (payload) => scysCourseUtils.flattenScysCourseApiChapters?.(payload) || [];
   const normalizeScysCourseEntries = (entries, baseUrl) => scysCourseUtils.normalizeScysCourseEntries?.(entries, baseUrl) || [];
   const joinInlineFragments = (fragments) => webMarkdownUtils.joinInlineFragments?.(fragments) || fragments.filter(Boolean).join("");
@@ -310,8 +311,10 @@
       : structuredEntries.length > 0
         ? structuredEntries
         : extractScysCourseEntriesFromDom();
+    let apiPayload = null;
     if (fallbackEntries.length === 0) {
-      fallbackEntries = await fetchScysCourseEntriesFromApi();
+      apiPayload = await fetchScysCourseDetailPayload();
+      fallbackEntries = flattenScysCourseApiChapters(apiPayload);
     }
     const chapters = normalizeScysCourseEntries(fallbackEntries, location.href);
 
@@ -320,7 +323,7 @@
     }
 
     return {
-      courseTitle: getScysCourseTitle(),
+      courseTitle: await getScysCourseOutlineTitle(apiPayload),
       courseUrl: location.href,
       chapters
     };
@@ -818,9 +821,13 @@
   }
 
   async function fetchScysCourseEntriesFromApi() {
+    return flattenScysCourseApiChapters(await fetchScysCourseDetailPayload());
+  }
+
+  async function fetchScysCourseDetailPayload() {
     const courseId = getCurrentScysCourseId();
     if (!courseId) {
-      return [];
+      return null;
     }
 
     const headers = {};
@@ -837,7 +844,21 @@
       throw new Error(`生财课程目录接口请求失败：${response.status}`);
     }
 
-    return flattenScysCourseApiChapters(await response.json());
+    return response.json();
+  }
+
+  async function getScysCourseOutlineTitle(apiPayload) {
+    const apiTitle = extractScysCourseApiTitle(apiPayload);
+    if (apiTitle) {
+      return apiTitle;
+    }
+
+    try {
+      const payload = await fetchScysCourseDetailPayload();
+      return extractScysCourseApiTitle(payload) || getScysCourseTitle();
+    } catch (error) {
+      return getScysCourseTitle();
+    }
   }
 
   function getCurrentScysCourseId() {

@@ -61,6 +61,29 @@
     return entries;
   }
 
+  function extractScysCourseApiTitle(payload) {
+    const candidates = [
+      payload?.data?.course?.title,
+      payload?.data?.course?.name,
+      payload?.data?.chapter?.course?.title,
+      payload?.data?.chapter?.course?.name,
+      payload?.course?.title,
+      payload?.course?.name,
+      payload?.chapter?.course?.title,
+      payload?.chapter?.course?.name,
+      payload?.data?.activity?.name
+    ];
+
+    for (const candidate of candidates) {
+      const title = cleanupTitle(candidate);
+      if (title) {
+        return title;
+      }
+    }
+
+    return "";
+  }
+
   function collectApiChapterEntries(chapters, entries, section) {
     let sectionOrder = section.sectionOrder;
 
@@ -112,6 +135,7 @@
   const api = {
     isScysCourseParsedUrl,
     buildScysChapterUrl,
+    extractScysCourseApiTitle,
     flattenScysCourseApiChapters,
     normalizeScysCourseEntries
   };

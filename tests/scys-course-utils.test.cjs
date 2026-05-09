@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const {
   buildScysChapterUrl,
+  extractScysCourseApiTitle,
   flattenScysCourseApiChapters,
   normalizeScysCourseEntries
 } = require("../shared/scys-course-utils.js");
@@ -77,4 +78,30 @@ test("flattens scys course api chapters into leaf chapter entries", () => {
       sectionOrder: 1
     }
   ]);
+});
+
+test("extracts content-specific title from scys course api payloads", () => {
+  assert.equal(
+    extractScysCourseApiTitle({
+      data: {
+        course: {
+          title: "超级 AI 大航海丨实战手册丨2026年5月航海 "
+        }
+      }
+    }),
+    "超级 AI 大航海丨实战手册丨2026年5月航海"
+  );
+
+  assert.equal(
+    extractScysCourseApiTitle({
+      data: {
+        chapter: {
+          course: {
+            name: "CLI 类 AI 编程工具速通"
+          }
+        }
+      }
+    }),
+    "CLI 类 AI 编程工具速通"
+  );
 });
