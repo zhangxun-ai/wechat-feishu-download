@@ -67,11 +67,282 @@
     return `专栏导出已停止，成功 ${successCount} 章，失败 ${failureCount} 章，未处理 ${skippedCount} 章，总耗时 ${elapsed}。`;
   }
 
+  function getScysCourseIdFromUrl(value) {
+    let url = null;
+    try {
+      url = new URL(String(value || ""));
+    } catch (_) {
+      return "";
+    }
+
+    if (!/(\.|^)scys\.com$/i.test(url.hostname)) {
+      return "";
+    }
+
+    const detailMatch = url.pathname.match(/\/course\/detail\/(\d+)(?:\/|$)/);
+    if (detailMatch) {
+      return detailMatch[1];
+    }
+
+    const deepseaMatch = url.pathname.match(/\/course\/(\d+)(?:\/|$)/);
+    if (deepseaMatch) {
+      return deepseaMatch[1];
+    }
+
+    return url.searchParams.get("course_id") || url.searchParams.get("courseId") || "";
+  }
+
+  function isScysCourseApiRateLimited(payload) {
+    const message = getScysCourseApiMessage(payload);
+    return message.includes("操作过于频繁");
+  }
+
+  function getScysCourseApiMessage(payload) {
+    if (!payload || typeof payload !== "object") {
+      return "";
+    }
+
+    return String(payload.message || payload.msg || payload.error || payload.errmsg || "");
+  }
+
+  function extractScysCourseApiMarkdown(payload) {
+    const candidates = getScysCourseApiContentCandidates(payload);
+    for (const candidate of candidates) {
+      const markdown = normalizeScysMarkdown(convertScysContentValue(candidate, new WeakSet()));
+      if (markdown) {
+        return markdown;
+      }
+    }
+
+    return "";
+  }
+
+  function getScysCourseApiContentCandidates(payload) {
+    const candidates = [];
+    const roots = [];
+
+    if (payload && typeof payload === "object") {
+      if (payload.data !== undefined) {
+        roots.push(payload.data);
+      }
+      if (payload.result !== undefined) {
+        roots.push(payload.result);
+      }
+      roots.push(payload);
+    } else {
+      roots.push(payload);
+    }
+
+    const paths = [
+      ["markdown"],
+      ["content_markdown"],
+      ["contentMarkdown"],
+      ["html"],
+      ["htmlContent"],
+      ["content_html"],
+      ["contentHtml"],
+      ["content"],
+      ["detail"],
+      ["body"],
+      ["article", "content"],
+      ["article", "html"],
+      ["chapter", "markdown"],
+      ["chapter", "content"],
+      ["chapter", "html"],
+      ["blocks"],
+      ["nodes"]
+    ];
+
+    for (const root of roots) {
+      for (const path of paths) {
+        const value = getValueAtPath(root, path);
+        if (value !== undefined && value !== null) {
+          candidates.push(value);
+        }
+      }
+    }
+
+    return candidates;
+  }
+
+  function getValueAtPath(root, path) {
+    let current = root;
+    for (const key of path) {
+      if (!current || typeof current !== "object" || !(key in current)) {
+        return undefined;
+      }
+      current = current[key];
+    }
+    return current;
+  }
+
+  function convertScysContentValue(value, seen) {
+    if (value === undefined || value === null) {
+      return "";
+    }
+
+    if (typeof value === "string") {
+      return convertScysContentString(value, seen);
+    }
+
+    if (typeof value === "number" || typeof value === "boolean") {
+      return "";
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => convertScysContentValue(item, seen)).filter(Boolean).join("\n\n");
+    }
+
+    if (typeof value !== "object") {
+      return "";
+    }
+
+    if (seen.has(value)) {
+      return "";
+    }
+    seen.add(value);
+
+    const imageMarkdown = buildScysImageMarkdown(value);
+    if (imageMarkdown) {
+      return imageMarkdown;
+    }
+
+    const directKeys = ["markdown", "content_markdown", "contentMarkdown", "html", "content", "text", "value", "title"];
+    const childKeys = ["children", "blocks", "nodes", "items", "paragraphs", "contents"];
+    const parts = [];
+
+    for (const key of directKeys) {
+      if (typeof value[key] === "string") {
+        const converted = convertScysContentString(value[key], seen);
+        if (converted) {
+          parts.push(converted);
+        }
+      }
+    }
+
+    for (const key of childKeys) {
+      if (Array.isArray(value[key])) {
+        const converted = convertScysContentValue(value[key], seen);
+        if (converted) {
+          parts.push(converted);
+        }
+      }
+    }
+
+    if (parts.length > 0) {
+      return parts.join("\n\n");
+    }
+
+    return Object.entries(value)
+      .filter(([key]) => !isScysCourseApiMetadataKey(key))
+      .map(([, child]) => convertScysContentValue(child, seen))
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  function convertScysContentString(value, seen) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return "";
+    }
+
+    if (/^[\[{]/.test(text)) {
+      try {
+        return convertScysContentValue(JSON.parse(text), seen);
+      } catch (_) {
+        // Fall through to text conversion.
+      }
+    }
+
+    if (/<[a-z][\s\S]*>/i.test(text)) {
+      return convertScysHtmlToMarkdown(text);
+    }
+
+    return decodeHtmlEntities(text);
+  }
+
+  function convertScysHtmlToMarkdown(value) {
+    return decodeHtmlEntities(String(value || "")
+      .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+      .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+      .replace(/<h([1-6])\b[^>]*>/gi, (_, level) => `\n${"#".repeat(Number(level))} `)
+      .replace(/<\/h[1-6]>/gi, "\n\n")
+      .replace(/<img\b[^>]*>/gi, (tag) => {
+        const src = getHtmlAttribute(tag, "src");
+        if (!src) {
+          return "";
+        }
+        const alt = getHtmlAttribute(tag, "alt");
+        return `\n![${alt}](${src})\n`;
+      })
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<li\b[^>]*>/gi, "\n- ")
+      .replace(/<\/li>/gi, "\n")
+      .replace(/<\/(?:p|div|section|article|blockquote|ul|ol)>/gi, "\n\n")
+      .replace(/<[^>]+>/g, ""));
+  }
+
+  function getHtmlAttribute(tag, name) {
+    const pattern = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
+    const match = String(tag || "").match(pattern);
+    return decodeHtmlEntities(match?.[1] || match?.[2] || match?.[3] || "").trim();
+  }
+
+  function buildScysImageMarkdown(value) {
+    const type = String(value?.type || value?.name || value?.tag || "").toLowerCase();
+    const src = String(value?.src || value?.url || value?.image || value?.imageUrl || value?.image_url || "").trim();
+    if (!src || (type && !/(image|img|photo|picture)/.test(type))) {
+      return "";
+    }
+    const alt = String(value?.alt || value?.title || "").trim();
+    return `![${alt}](${src})`;
+  }
+
+  function decodeHtmlEntities(value) {
+    const namedEntities = {
+      amp: "&",
+      apos: "'",
+      gt: ">",
+      lt: "<",
+      nbsp: " ",
+      quot: "\""
+    };
+
+    return String(value || "").replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity) => {
+      const key = entity.toLowerCase();
+      if (key[0] === "#") {
+        const codePoint = key[1] === "x"
+          ? Number.parseInt(key.slice(2), 16)
+          : Number.parseInt(key.slice(1), 10);
+        return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : match;
+      }
+      return namedEntities[key] || match;
+    });
+  }
+
+  function isScysCourseApiMetadataKey(key) {
+    return /^(id|chapter_id|course_id|created_at|updated_at|sort|order|status|message|msg|url)$/i.test(key);
+  }
+
+  function normalizeScysMarkdown(value) {
+    return String(value || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .join("\n")
+      .trim();
+  }
+
   const api = {
     buildCourseStoppedMessage,
+    extractScysCourseApiMarkdown,
     formatElapsedDuration,
+    getScysCourseIdFromUrl,
     getCourseExportExecutionProfile,
-    getCourseExportWorkerCount
+    getCourseExportWorkerCount,
+    isScysCourseApiRateLimited
   };
 
   globalScope.CourseExportRuntime = api;

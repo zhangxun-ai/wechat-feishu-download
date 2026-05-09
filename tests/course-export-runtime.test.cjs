@@ -1,9 +1,12 @@
 const assert = require("node:assert/strict");
 const {
   buildCourseStoppedMessage,
+  extractScysCourseApiMarkdown,
   formatElapsedDuration,
+  getScysCourseIdFromUrl,
   getCourseExportWorkerCount,
-  getCourseExportExecutionProfile
+  getCourseExportExecutionProfile,
+  isScysCourseApiRateLimited
 } = require("../shared/course-export-runtime.js");
 
 function test(name, fn) {
@@ -54,4 +57,29 @@ test("builds a stopped course export summary", () => {
     }),
     "专栏导出已停止，成功 2 章，失败 3 章，未处理 4 章，总耗时 00:42。"
   );
+});
+
+test("extracts course id from current and deepsea SCYS urls", () => {
+  assert.equal(getScysCourseIdFromUrl("https://scys.com/course/detail/172?chapterId=11403"), "172");
+  assert.equal(getScysCourseIdFromUrl("https://scys.com/deepsea/abc/course/172?chapterId=11403"), "172");
+  assert.equal(getScysCourseIdFromUrl("https://example.com/course/detail/172"), "");
+});
+
+test("extracts readable markdown from SCYS chapter API payloads", () => {
+  const markdown = extractScysCourseApiMarkdown({
+    status: 0,
+    data: {
+      content: "<h1>章节标题</h1><p>第一段&nbsp;内容</p><ul><li>要点 A</li><li>要点 B</li></ul>"
+    }
+  });
+
+  assert.match(markdown, /章节标题/);
+  assert.match(markdown, /第一段 内容/);
+  assert.match(markdown, /- 要点 A/);
+  assert.match(markdown, /- 要点 B/);
+});
+
+test("detects SCYS API rate limit responses", () => {
+  assert.equal(isScysCourseApiRateLimited({ status: 1, message: "操作过于频繁，请稍后再试" }), true);
+  assert.equal(isScysCourseApiRateLimited({ status: 0, message: "ok" }), false);
 });

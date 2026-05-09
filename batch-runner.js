@@ -15,9 +15,12 @@ const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || 
 const extractCourseChapterMarkdown = (value) => courseExportBuilders.extractCourseChapterMarkdown?.(value) || String(value || "").trim();
 const getCourseChapterMarkdownError = (value, sourceUrl) => courseExportBuilders.getCourseChapterMarkdownError?.(value, sourceUrl) || "";
 const buildCourseStoppedMessage = (value) => courseExportRuntime.buildCourseStoppedMessage?.(value) || "专栏导出已停止。";
+const extractScysCourseApiMarkdown = (value) => courseExportRuntime.extractScysCourseApiMarkdown?.(value) || "";
 const formatElapsedDuration = (value) => courseExportRuntime.formatElapsedDuration?.(value) || "00:00";
+const getScysCourseIdFromUrl = (value) => courseExportRuntime.getScysCourseIdFromUrl?.(value) || "";
 const getCourseExportExecutionProfileForTotal = (totalCount) => courseExportRuntime.getCourseExportExecutionProfile?.(totalCount) || null;
 const getCourseExportWorkerCountForTotal = (totalCount) => courseExportRuntime.getCourseExportWorkerCount?.(totalCount) || 1;
+const isScysCourseApiRateLimited = (value) => courseExportRuntime.isScysCourseApiRateLimited?.(value) || false;
 const normalizeOutputTarget = (value, fallback) => exportUiModels.normalizeOutputTarget?.(value, fallback) || "download";
 const getOutputTargetState = (value) => exportUiModels.getOutputTargetState?.(value) || {
   key: "download",
@@ -333,7 +336,10 @@ async function runCourseExportJob(job) {
 
   const totalCount = getJobTotal(job);
   const outputTarget = getJobOutputTargetState(job);
-  const executionProfile = getCourseExportExecutionProfile(job);
+  const scysCourseId = getScysCourseIdForJob(job);
+  const executionProfile = scysCourseId
+    ? getScysCourseApiExecutionProfile(totalCount)
+    : getCourseExportExecutionProfile(job);
   const workerCount = executionProfile.workerCount;
   const exportedChapters = new Array(totalCount);
   const failedChapters = [];
@@ -349,9 +355,13 @@ async function runCourseExportJob(job) {
 
   setStatus(`正在处理专栏，使用 ${workerCount} 个通道（${executionProfile.label}）。`, "loading");
 
-  await Promise.all(
-    Array.from({ length: workerCount }, (_, workerIndex) => runCourseExportWorker(workerIndex))
-  );
+  if (scysCourseId) {
+    await runScysCourseApiExport(scysCourseId);
+  } else {
+    await Promise.all(
+      Array.from({ length: workerCount }, (_, workerIndex) => runCourseExportWorker(workerIndex))
+    );
+  }
 
   setStopTaskActive(false);
   updateStats(completedCount, successCount, failureCount, totalCount);
@@ -455,6 +465,90 @@ async function runCourseExportJob(job) {
       elapsed
     }), "error");
     appendLog(`任务结束，总耗时 ${elapsed}。`, "error");
+  }
+
+  async function runScysCourseApiExport(courseId) {
+    let apiTabId = null;
+    setWorkerState(0, "准备中", "读取生财课程接口");
+    appendLog(`生财专栏已切换为接口稳速模式：course_id=${courseId}`);
+
+    try {
+      const entryUrl = job.courseUrl || job.chapters.find((chapter) => chapter?.url)?.url;
+      apiTabId = await createTab(entryUrl, false);
+      activeTaskTabIds.add(apiTabId);
+      await waitForTabReady(apiTabId, entryUrl, 45000);
+
+      for (let index = 0; index < job.chapters.length; index += 1) {
+        if (stopRequested) {
+          setWorkerState(0, "已停止", "不再领取新章节");
+          return;
+        }
+
+        const chapter = job.chapters[index];
+        setWorkerState(0, `正在处理 ${index + 1}/${totalCount}`, chapter.title);
+        appendLog(`接口获取 ${index + 1}/${totalCount}: ${chapter.title}`);
+
+        try {
+          const markdown = await exportScysCourseChapterWithRetry(courseId, chapter, {
+            apiTabId,
+            includeImages: job.includeImages !== false,
+            maxRetries: executionProfile.maxRetries,
+            retryBaseDelayMs: executionProfile.retryBaseDelayMs
+          });
+          const markdownError = getCourseChapterMarkdownError(markdown, chapter.url);
+          if (markdownError) {
+            throw new Error(markdownError);
+          }
+
+          exportedChapters[index] = {
+            order: chapter.order,
+            title: chapter.title,
+            sectionTitle: chapter.sectionTitle || "",
+            sectionId: chapter.sectionId || "",
+            sectionOrder: chapter.sectionOrder || 0,
+            url: chapter.url,
+            markdown
+          };
+          successCount += 1;
+          consecutiveFailures = 0;
+          setWorkerState(0, `已完成 ${index + 1}/${totalCount}`, chapter.title);
+          appendLog(`已提取: ${chapter.title}`, "success");
+        } catch (error) {
+          if (stopRequested) {
+            setWorkerState(0, "已停止", chapter.title);
+            return;
+          }
+          failureCount += 1;
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 2) {
+            appendLog("检测到连续失败，已保持单通道并延长接口重试间隔。", "error");
+          }
+          failedChapters.push({
+            title: chapter.title,
+            url: chapter.url,
+            message: error.message || "未知错误"
+          });
+          setWorkerState(0, `失败 ${index + 1}/${totalCount}`, chapter.title);
+          appendLog(`失败: ${chapter.title} | ${error.message || "未知错误"}`, "error");
+        }
+
+        completedCount += 1;
+        updateStats(completedCount, successCount, failureCount, totalCount);
+        if (completedCount < totalCount) {
+          setStatus(`正在处理专栏，已完成 ${completedCount}/${totalCount} 章（${executionProfile.label}）。`, "loading");
+        } else {
+          setWorkerState(0, "收尾中", "等待汇总输出");
+        }
+        if (!stopRequested && completedCount < totalCount) {
+          await sleep(executionProfile.interTaskDelayMs);
+        }
+      }
+    } finally {
+      if (apiTabId !== null) {
+        activeTaskTabIds.delete(apiTabId);
+        await closeTab(apiTabId);
+      }
+    }
   }
 
   async function runCourseExportWorker(workerIndex) {
@@ -598,6 +692,215 @@ function getCourseExportExecutionProfile(job) {
 
 function getCourseExportWorkerCount(job) {
   return getCourseExportExecutionProfile(job).workerCount;
+}
+
+function getScysCourseIdForJob(job) {
+  if (job?.source !== "scys-course") {
+    return "";
+  }
+
+  const urls = [job.courseUrl, ...(Array.isArray(job.chapters) ? job.chapters.map((chapter) => chapter?.url) : [])];
+  for (const url of urls) {
+    const courseId = getScysCourseIdFromUrl(url);
+    if (courseId) {
+      return courseId;
+    }
+  }
+
+  return "";
+}
+
+function getScysCourseApiExecutionProfile(totalCount) {
+  return {
+    mode: "scys-api",
+    label: "接口稳速模式",
+    workerCount: 1,
+    interTaskDelayMs: Number(totalCount) > 30 ? 1200 : 900,
+    maxRetries: 4,
+    retryBaseDelayMs: 1200
+  };
+}
+
+async function exportScysCourseChapterWithRetry(courseId, chapter, options = {}) {
+  const chapterId = getScysChapterId(chapter);
+  if (!chapterId) {
+    throw new Error("章节缺少 chapterId");
+  }
+
+  const maxRetries = Math.max(0, Number(options.maxRetries) || 0);
+  const retryBaseDelayMs = Math.max(800, Number(options.retryBaseDelayMs) || 1200);
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (stopRequested) {
+      throw new Error("任务已停止");
+    }
+
+    try {
+      if (attempt > 0) {
+        appendLog(`接口重试 ${attempt}/${maxRetries}: ${chapter.title}`);
+      }
+      const payload = await fetchScysCourseChapterPayload(options.apiTabId, courseId, chapterId);
+      const apiFailureMessage = getScysCourseApiFailureMessage(payload);
+      if (isScysCourseApiRateLimited(payload)) {
+        throw buildScysCourseApiError(apiFailureMessage || "生财接口提示操作过于频繁", "SCYS_API_RATE_LIMIT");
+      }
+      if (apiFailureMessage) {
+        throw buildScysCourseApiError(apiFailureMessage, "SCYS_API_ERROR");
+      }
+
+      let markdown = extractScysCourseApiMarkdown(payload);
+      if (options.includeImages === false) {
+        markdown = stripMarkdownImages(markdown);
+      }
+      if (!markdown) {
+        throw buildScysCourseApiError("接口未返回章节正文", "SCYS_API_EMPTY");
+      }
+      return markdown;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxRetries || stopRequested) {
+        break;
+      }
+
+      const delay = getScysCourseApiRetryDelay(error, attempt, retryBaseDelayMs);
+      appendLog(`本次接口失败，将在 ${delay}ms 后重试。`, "error");
+      await sleep(delay);
+    }
+  }
+
+  throw lastError || new Error("生财章节接口导出失败");
+}
+
+function getScysChapterId(chapter) {
+  const explicitId = String(chapter?.chapterId || "").trim();
+  if (/^\d+$/.test(explicitId)) {
+    return explicitId;
+  }
+
+  try {
+    const parsed = new URL(String(chapter?.url || ""));
+    const chapterId = parsed.searchParams.get("chapterId") || "";
+    return /^\d+$/.test(chapterId) ? chapterId : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+async function fetchScysCourseChapterPayload(apiTabId, courseId, chapterId) {
+  if (!apiTabId) {
+    throw new Error("生财接口通道未准备好");
+  }
+
+  const result = await executeScysCourseApiFetch(apiTabId, courseId, chapterId);
+  if (!result?.ok) {
+    const error = buildScysCourseApiError(`生财章节接口请求失败：HTTP ${result?.status || "未知"}`, "SCYS_API_HTTP");
+    error.status = result?.status || 0;
+    throw error;
+  }
+
+  return result.payload;
+}
+
+function executeScysCourseApiFetch(tabId, courseId, chapterId) {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript(
+      {
+        target: { tabId },
+        world: "MAIN",
+        func: async (courseIdArg, chapterIdArg) => {
+          function readScysToken() {
+            const raw = localStorage.getItem("__user_token.v3")
+              || localStorage.getItem("user_token")
+              || localStorage.getItem("token")
+              || "";
+            if (!raw) {
+              return "";
+            }
+            try {
+              const parsed = JSON.parse(raw);
+              if (typeof parsed === "string") {
+                return parsed;
+              }
+              return parsed?.token || parsed?.value || parsed?.access_token || raw;
+            } catch (_) {
+              return raw;
+            }
+          }
+
+          const headers = { Accept: "application/json, text/plain, */*" };
+          const token = readScysToken();
+          if (token) {
+            headers["x-token"] = token;
+          }
+
+          const endpoint = `/search/course/getChapterContent?course_id=${encodeURIComponent(courseIdArg)}&chapter_id=${encodeURIComponent(chapterIdArg)}`;
+          const response = await fetch(endpoint, {
+            cache: "no-store",
+            credentials: "include",
+            headers
+          });
+          const text = await response.text();
+          let payload = null;
+          try {
+            payload = JSON.parse(text);
+          } catch (_) {
+            payload = {
+              status: response.ok ? 0 : response.status,
+              message: text
+            };
+          }
+          return {
+            ok: response.ok,
+            status: response.status,
+            payload
+          };
+        },
+        args: [String(courseId), String(chapterId)]
+      },
+      (results) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(results?.[0]?.result || null);
+      }
+    );
+  });
+}
+
+function getScysCourseApiFailureMessage(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const status = payload.status ?? payload.code ?? payload.errcode;
+  if (status === undefined || status === null || String(status) === "0") {
+    return "";
+  }
+
+  return String(payload.message || payload.msg || payload.error || `接口返回状态 ${status}`);
+}
+
+function buildScysCourseApiError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function getScysCourseApiRetryDelay(error, attempt, retryBaseDelayMs) {
+  const baseDelay = Math.round(retryBaseDelayMs * Math.pow(1.8, attempt));
+  if (error?.code === "SCYS_API_RATE_LIMIT") {
+    return Math.min(15000, Math.max(3000, baseDelay * 2));
+  }
+  return Math.min(10000, baseDelay);
+}
+
+function stripMarkdownImages(markdown) {
+  return String(markdown || "")
+    .replace(/!\[[^\]]*]\([^)]+\)/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function getJobTotal(job) {
