@@ -59,7 +59,16 @@
     return getCourseExportExecutionProfile(totalCount).workerCount;
   }
 
+  function buildCourseStoppedMessage(input = {}) {
+    const successCount = Math.max(0, Number(input.successCount) || 0);
+    const failureCount = Math.max(0, Number(input.failureCount) || 0);
+    const skippedCount = Math.max(0, Number(input.skippedCount) || 0);
+    const elapsed = String(input.elapsed || "00:00");
+    return `专栏导出已停止，成功 ${successCount} 章，失败 ${failureCount} 章，未处理 ${skippedCount} 章，总耗时 ${elapsed}。`;
+  }
+
   const api = {
+    buildCourseStoppedMessage,
     formatElapsedDuration,
     getCourseExportExecutionProfile,
     getCourseExportWorkerCount

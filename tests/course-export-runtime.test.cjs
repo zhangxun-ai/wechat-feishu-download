@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const {
+  buildCourseStoppedMessage,
   formatElapsedDuration,
   getCourseExportWorkerCount,
   getCourseExportExecutionProfile
@@ -41,4 +42,16 @@ test("builds a fast SCYS execution profile without fixed settle waits", () => {
   assert.ok(profile.workerStaggerMs <= 220);
   assert.equal(profile.maxRetries, 2);
   assert.ok(profile.retryBaseDelayMs >= 900);
+});
+
+test("builds a stopped course export summary", () => {
+  assert.equal(
+    buildCourseStoppedMessage({
+      successCount: 2,
+      failureCount: 3,
+      skippedCount: 4,
+      elapsed: "00:42"
+    }),
+    "专栏导出已停止，成功 2 章，失败 3 章，未处理 4 章，总耗时 00:42。"
+  );
 });

@@ -14,6 +14,7 @@ const isSingleExportUrl = (url) => exportUrlUtils.isSingleExportUrl?.(url) || fa
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const extractCourseChapterMarkdown = (value) => courseExportBuilders.extractCourseChapterMarkdown?.(value) || String(value || "").trim();
 const getCourseChapterMarkdownError = (value, sourceUrl) => courseExportBuilders.getCourseChapterMarkdownError?.(value, sourceUrl) || "";
+const buildCourseStoppedMessage = (value) => courseExportRuntime.buildCourseStoppedMessage?.(value) || "专栏导出已停止。";
 const formatElapsedDuration = (value) => courseExportRuntime.formatElapsedDuration?.(value) || "00:00";
 const getCourseExportExecutionProfileForTotal = (totalCount) => courseExportRuntime.getCourseExportExecutionProfile?.(totalCount) || null;
 const getCourseExportWorkerCountForTotal = (totalCount) => courseExportRuntime.getCourseExportWorkerCount?.(totalCount) || 1;
@@ -46,6 +47,7 @@ const elapsedEl = document.getElementById("jobElapsed");
 const resultSummaryEl = document.getElementById("resultSummary");
 const resultListEl = document.getElementById("resultList");
 const showResultDetailsButton = document.getElementById("showResultDetails");
+const resultActionsEl = document.getElementById("resultActions");
 const showWorkerDetailsButton = document.getElementById("showWorkerDetails");
 const showLogDetailsButton = document.getElementById("showLogDetails");
 const workerDetailsEl = document.getElementById("workerDetails");
@@ -60,8 +62,12 @@ let workerStates = [];
 let pendingObsidianRetry = null;
 let cachedObsidianBinding = null;
 let cachedObsidianBindingPromise = null;
+let stopRequested = false;
+const activeTaskTabIds = new Set();
 const resultEntryCache = new Set();
+const stopTaskButton = createStopTaskButton();
 
+resultActionsEl?.prepend(stopTaskButton);
 retryObsidianWriteButton?.addEventListener("click", handleRetryObsidianWrite);
 showResultDetailsButton?.addEventListener("click", () => {
   if (resultSummaryEl?.hidden === false) {
@@ -82,6 +88,50 @@ showLogDetailsButton?.addEventListener("click", () => {
     logDetailsEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 });
+
+function createStopTaskButton() {
+  const button = document.createElement("button");
+  button.id = "stopTask";
+  button.className = "button button-subtle";
+  button.type = "button";
+  button.hidden = true;
+  button.textContent = "停止任务";
+  button.addEventListener("click", handleStopTask);
+  return button;
+}
+
+function handleStopTask() {
+  if (stopRequested) {
+    return;
+  }
+
+  stopRequested = true;
+  setStopTaskActive(true);
+  setStatus("正在停止任务，已打开的通道会尽快关闭。", "error");
+  appendLog("已请求停止任务：不再领取后续任务，并关闭当前通道。", "error");
+  closeActiveTaskTabs();
+}
+
+function setStopTaskActive(active) {
+  if (!stopTaskButton) {
+    return;
+  }
+
+  if (!active && !stopRequested) {
+    stopTaskButton.hidden = true;
+    return;
+  }
+
+  stopTaskButton.hidden = false;
+  stopTaskButton.disabled = stopRequested || !active;
+  stopTaskButton.textContent = stopRequested ? "正在停止" : "停止任务";
+}
+
+function closeActiveTaskTabs() {
+  for (const tabId of Array.from(activeTaskTabIds)) {
+    closeTab(tabId);
+  }
+}
 
 init().catch((error) => {
   setStatus(error.message || "任务初始化失败", "error");
@@ -107,6 +157,7 @@ async function init() {
   metaEl.textContent = buildMeta(job);
   setStatus(`任务已加载，共 ${totalCount} ${getJobUnitLabel(job)}，开始处理。`, "loading");
   updateStats(0, 0, 0, totalCount);
+  setStopTaskActive(true);
   startElapsedClock();
 
   try {
@@ -118,6 +169,7 @@ async function init() {
   } finally {
     stopElapsedClock();
     updateElapsedClock();
+    setStopTaskActive(false);
     await removeJob(jobId);
   }
 }
@@ -132,10 +184,14 @@ async function runLinkBatchJob(job) {
   const totalCount = getJobTotal(job);
   let successCount = 0;
   let failureCount = 0;
+  let completedCount = 0;
 
   for (let index = 0; index < job.links.length; index += 1) {
+    if (stopRequested) {
+      break;
+    }
     const link = job.links[index];
-    updateStats(index, successCount, failureCount, totalCount);
+    updateStats(completedCount, successCount, failureCount, totalCount);
     setStatus(`正在处理 ${index + 1}/${totalCount} 篇`, "loading");
     appendLog(`开始处理 ${index + 1}/${totalCount}: ${link}`);
 
@@ -178,6 +234,9 @@ async function runLinkBatchJob(job) {
 
       successCount += 1;
     } catch (error) {
+      if (stopRequested) {
+        break;
+      }
       failureCount += 1;
       failedEntries.push({
         url: link,
@@ -186,8 +245,13 @@ async function runLinkBatchJob(job) {
       appendLog(`失败: ${link} | ${error.message || "未知错误"}`, "error");
     }
 
-    await sleep(INTER_TASK_DELAY_MS);
+    completedCount += 1;
+    if (!stopRequested) {
+      await sleep(INTER_TASK_DELAY_MS);
+    }
   }
+
+  setStopTaskActive(false);
 
   if (zipBuilder && successCount > 0) {
     setStatus(`正在打包 ZIP，共 ${successCount} 篇。`, "loading");
@@ -239,9 +303,13 @@ async function runLinkBatchJob(job) {
     }
   }
 
-  updateStats(totalCount, successCount, failureCount, totalCount);
+  updateStats(completedCount, successCount, failureCount, totalCount);
 
-  if (failureCount === 0) {
+  if (stopRequested) {
+    const skippedCount = Math.max(0, totalCount - completedCount);
+    setStatus(`任务已停止，成功 ${successCount} 篇，失败 ${failureCount} 篇，未处理 ${skippedCount} 篇。`, "error");
+    appendLog(`任务已停止，未处理 ${skippedCount} 篇。`, "error");
+  } else if (failureCount === 0) {
     if (outputTarget.key === "both") {
       setStatus(zipOutput ? `输出完成，已打包 ZIP 并同步 Obsidian，共 ${successCount} 篇。` : `输出完成，已下载并同步 Obsidian，共 ${successCount} 篇。`, "ready");
     } else if (outputTarget.key === "obsidian") {
@@ -285,7 +353,21 @@ async function runCourseExportJob(job) {
     Array.from({ length: workerCount }, (_, workerIndex) => runCourseExportWorker(workerIndex))
   );
 
-  updateStats(totalCount, successCount, failureCount, totalCount);
+  setStopTaskActive(false);
+  updateStats(completedCount, successCount, failureCount, totalCount);
+
+  if (stopRequested) {
+    const elapsed = formatElapsedDuration(Date.now() - jobStartedAt);
+    const skippedCount = Math.max(0, totalCount - completedCount);
+    setStatus(buildCourseStoppedMessage({
+      successCount,
+      failureCount,
+      skippedCount,
+      elapsed
+    }), "error");
+    appendLog(`任务已停止，未处理 ${skippedCount} 章。`, "error");
+    return;
+  }
 
   if (successCount === 0) {
     const elapsed = formatElapsedDuration(Date.now() - jobStartedAt);
@@ -382,8 +464,13 @@ async function runCourseExportJob(job) {
 
     try {
       tabId = await createTab("about:blank", false);
+      activeTaskTabIds.add(tabId);
 
       while (true) {
+        if (stopRequested) {
+          setWorkerState(workerIndex, "已停止", "不再领取新章节");
+          return;
+        }
         const index = nextIndex;
         if (index >= job.chapters.length) {
           setWorkerState(workerIndex, "空闲", "等待其他通道完成");
@@ -429,6 +516,10 @@ async function runCourseExportJob(job) {
           setWorkerState(workerIndex, `已完成 ${index + 1}/${totalCount}`, chapter.title);
           appendLog(`已提取: ${chapter.title}`, "success");
         } catch (error) {
+          if (stopRequested) {
+            setWorkerState(workerIndex, "已停止", chapter.title);
+            return;
+          }
           failureCount += 1;
           consecutiveFailures += 1;
           if (consecutiveFailures >= 2) {
@@ -452,12 +543,13 @@ async function runCourseExportJob(job) {
           setWorkerState(workerIndex, "收尾中", "等待汇总输出");
         }
         const interTaskDelayMs = Math.round((executionProfile.interTaskDelayMs + (workerIndex * 40)) * slowdownMultiplier);
-        if (interTaskDelayMs > 0) {
+        if (!stopRequested && interTaskDelayMs > 0) {
           await sleep(interTaskDelayMs);
         }
       }
     } finally {
       if (tabId !== null) {
+        activeTaskTabIds.delete(tabId);
         await closeTab(tabId);
       }
     }
@@ -528,6 +620,9 @@ async function exportLinkWithRetry(url, options) {
   let lastError = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    if (stopRequested) {
+      throw new Error("任务已停止");
+    }
     try {
       if (attempt > 0) {
         appendLog(`重试 ${attempt}/${MAX_RETRIES}: ${url}`);
@@ -540,7 +635,9 @@ async function exportLinkWithRetry(url, options) {
       }
       const delay = (attempt + 1) * 1500;
       appendLog(`本次失败，将在 ${delay}ms 后重试。`, "error");
-      await sleep(delay);
+      if (!stopRequested) {
+        await sleep(delay);
+      }
     }
   }
 
@@ -555,6 +652,9 @@ async function exportLinkInExistingTabWithRetry(tabId, url, options, retryOption
   const slowdownMultiplier = Math.max(1, Number(retryOptions.slowdownMultiplier) || 1);
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (stopRequested) {
+      throw new Error("任务已停止");
+    }
     try {
       if (attempt > 0) {
         appendLog(`重试 ${attempt}/${maxRetries}: ${url}`);
@@ -573,7 +673,9 @@ async function exportLinkInExistingTabWithRetry(tabId, url, options, retryOption
       }
       const delay = Math.round((attempt + 1) * retryBaseDelayMs * slowdownMultiplier);
       appendLog(`本次失败，将在 ${delay}ms 后重试。`, "error");
-      await sleep(delay);
+      if (!stopRequested) {
+        await sleep(delay);
+      }
     }
   }
 
@@ -603,6 +705,7 @@ async function exportLinkInBackground(url, options) {
   const tabId = await createTab(url, false);
 
   try {
+    activeTaskTabIds.add(tabId);
     await waitForTabReady(tabId, url);
     await sleep(BACKGROUND_TAB_SETTLE_DELAY_MS);
 
@@ -621,6 +724,7 @@ async function exportLinkInBackground(url, options) {
       content: payload.content
     };
   } finally {
+    activeTaskTabIds.delete(tabId);
     await closeTab(tabId);
   }
 }
