@@ -11,6 +11,7 @@
   const scysCourseUtils = globalThis.ScysCourseUtils || {};
   const webMarkdownUtils = globalThis.WebMarkdownUtils || {};
   const isScysCourseParsedUrl = (parsed) => scysCourseUtils.isScysCourseParsedUrl?.(parsed) || false;
+  const flattenScysCourseApiChapters = (payload) => scysCourseUtils.flattenScysCourseApiChapters?.(payload) || [];
   const normalizeScysCourseEntries = (entries, baseUrl) => scysCourseUtils.normalizeScysCourseEntries?.(entries, baseUrl) || [];
   const joinInlineFragments = (fragments) => webMarkdownUtils.joinInlineFragments?.(fragments) || fragments.filter(Boolean).join("");
   const formatReadableMarkdown = (markdown, options) => webMarkdownUtils.formatReadableMarkdown?.(markdown, options) || markdown;
@@ -297,18 +298,21 @@
     throw new Error("当前页面不是受支持的导出页面");
   }
 
-  function getScysCourseOutline() {
+  async function getScysCourseOutline() {
     if (!isScysCoursePage()) {
       throw new Error("当前页面不是生财课程章节页");
     }
 
     const sidebarEntries = extractScysCourseEntriesFromSidebar();
     const structuredEntries = sidebarEntries.length > 0 ? [] : extractScysCourseEntriesFromStructuredState();
-    const fallbackEntries = sidebarEntries.length > 0
+    let fallbackEntries = sidebarEntries.length > 0
       ? sidebarEntries
       : structuredEntries.length > 0
         ? structuredEntries
         : extractScysCourseEntriesFromDom();
+    if (fallbackEntries.length === 0) {
+      fallbackEntries = await fetchScysCourseEntriesFromApi();
+    }
     const chapters = normalizeScysCourseEntries(fallbackEntries, location.href);
 
     if (chapters.length === 0) {
@@ -789,6 +793,40 @@
     }
 
     return entries;
+  }
+
+  async function fetchScysCourseEntriesFromApi() {
+    const courseId = getCurrentScysCourseId();
+    if (!courseId) {
+      return [];
+    }
+
+    const headers = {};
+    const token = String(localStorage.getItem("__user_token.v3") || "").trim();
+    if (token) {
+      headers["x-token"] = token;
+    }
+
+    const response = await fetch(`/search/course/getCourseDetail?course_id=${encodeURIComponent(courseId)}`, {
+      credentials: "include",
+      headers
+    });
+    if (!response.ok) {
+      throw new Error(`生财课程目录接口请求失败：${response.status}`);
+    }
+
+    return flattenScysCourseApiChapters(await response.json());
+  }
+
+  function getCurrentScysCourseId() {
+    const pathname = location.pathname || "";
+    const detailMatch = pathname.match(/^\/course\/detail\/(\d+)/);
+    if (detailMatch) {
+      return detailMatch[1];
+    }
+
+    const deepseaMatch = pathname.match(/^\/deepsea\/\d+\/course\/(\d+)/);
+    return deepseaMatch ? deepseaMatch[1] : "";
   }
 
   function sanitizeScysCourseArticle(root, options) {

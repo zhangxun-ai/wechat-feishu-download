@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const {
   buildScysChapterUrl,
+  flattenScysCourseApiChapters,
   normalizeScysCourseEntries
 } = require("../shared/scys-course-utils.js");
 
@@ -40,6 +41,40 @@ test("normalizes raw scys course entries into ordered chapters", () => {
       sectionTitle: "十三、MCP",
       sectionId: "10850",
       sectionOrder: 2
+    }
+  ]);
+});
+
+test("flattens scys course api chapters into leaf chapter entries", () => {
+  const result = flattenScysCourseApiChapters({
+    data: {
+      chapters: [
+        {
+          id: 100,
+          title: "一、认知",
+          children: [
+            { id: 11403, title: "01. AI 时代，普通人怎么用好 AI" },
+            { id: 11404, name: "02. AI 能力系统概览" }
+          ]
+        }
+      ]
+    }
+  });
+
+  assert.deepEqual(result, [
+    {
+      chapterId: "11403",
+      title: "01. AI 时代，普通人怎么用好 AI",
+      sectionTitle: "一、认知",
+      sectionId: "100",
+      sectionOrder: 1
+    },
+    {
+      chapterId: "11404",
+      title: "02. AI 能力系统概览",
+      sectionTitle: "一、认知",
+      sectionId: "100",
+      sectionOrder: 1
     }
   ]);
 });

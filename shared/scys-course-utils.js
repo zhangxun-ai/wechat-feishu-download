@@ -44,6 +44,55 @@
     return normalized;
   }
 
+  function flattenScysCourseApiChapters(payload) {
+    const chapters = Array.isArray(payload?.data?.chapters)
+      ? payload.data.chapters
+      : Array.isArray(payload?.chapters)
+        ? payload.chapters
+        : [];
+    const entries = [];
+
+    collectApiChapterEntries(chapters, entries, {
+      sectionTitle: "",
+      sectionId: "",
+      sectionOrder: 0
+    });
+
+    return entries;
+  }
+
+  function collectApiChapterEntries(chapters, entries, section) {
+    let sectionOrder = section.sectionOrder;
+
+    for (const chapter of chapters || []) {
+      const chapterId = cleanupChapterId(chapter?.id || chapter?.chapterId || chapter?.chapter_id);
+      const title = cleanupTitle(chapter?.title || chapter?.name || chapter?.chapterTitle);
+      const children = Array.isArray(chapter?.children) ? chapter.children : [];
+
+      if (children.length > 0) {
+        sectionOrder += 1;
+        collectApiChapterEntries(children, entries, {
+          sectionTitle: title || section.sectionTitle,
+          sectionId: chapterId || section.sectionId,
+          sectionOrder
+        });
+        continue;
+      }
+
+      if (!chapterId || !title) {
+        continue;
+      }
+
+      entries.push({
+        chapterId,
+        title,
+        sectionTitle: section.sectionTitle,
+        sectionId: section.sectionId,
+        sectionOrder: section.sectionOrder
+      });
+    }
+  }
+
   function cleanupChapterId(value) {
     const text = String(value || "").trim();
     return /^\d+$/.test(text) ? text : "";
@@ -63,6 +112,7 @@
   const api = {
     isScysCourseParsedUrl,
     buildScysChapterUrl,
+    flattenScysCourseApiChapters,
     normalizeScysCourseEntries
   };
 
