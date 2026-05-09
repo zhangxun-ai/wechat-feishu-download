@@ -399,6 +399,7 @@ async function runCourseExportJob(job) {
           const rawResult = await exportLinkInExistingTabWithRetry(tabId, chapter.url, {
             format: "markdown",
             includeImages: job.includeImages !== false,
+            chapterTitle: chapter.title,
             settleDelayMs: executionProfile.settleDelayMs
           }, {
             maxRetries: executionProfile.maxRetries,
@@ -609,7 +610,8 @@ async function exportLinkInBackground(url, options) {
       type: "feishu-export:export-document",
       format: options.format,
       options: {
-        includeImages: options.includeImages
+        includeImages: options.includeImages,
+        chapterTitle: options.chapterTitle || ""
       }
     });
 
@@ -629,7 +631,8 @@ async function exportLinkInExistingTab(tabId, url, options) {
     type: "feishu-export:export-document",
     format: options.format,
     options: {
-      includeImages: options.includeImages
+      includeImages: options.includeImages,
+      chapterTitle: options.chapterTitle || ""
     }
   });
 

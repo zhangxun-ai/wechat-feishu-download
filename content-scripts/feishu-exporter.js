@@ -327,9 +327,9 @@
   }
 
   async function exportScysCourseDocument(format, options) {
-    await waitForScysCourseChapterReady();
-    const meta = getScysCourseChapterMeta();
-    const liveRoot = getScysCourseExportRoot();
+    await waitForScysCourseChapterReady({ chapterTitle: options.chapterTitle });
+    const meta = getScysCourseChapterMeta(options);
+    const liveRoot = getScysCourseExportRoot(options);
     const rawHtml = liveRoot.innerHTML;
     const clonedRoot = liveRoot.cloneNode(true);
 
@@ -536,11 +536,13 @@
     );
   }
 
-  function getScysCourseChapterMeta() {
+  function getScysCourseChapterMeta(options = {}) {
     const chapterId = getCurrentScysChapterId();
     const title = cleanupInline(
       getCurrentScysChapterHeading()?.textContent
+      || findScysCourseHeadingByTitle(options.chapterTitle)?.textContent
       || document.getElementById(`sidebar-level3-${chapterId}`)?.textContent
+      || options.chapterTitle
       || extractVisibleTitle()
       || document.title
     ) || getScysCourseTitle() || "未命名章节";
@@ -577,9 +579,13 @@
       || null;
   }
 
-  function getScysCourseExportRoot() {
-    const heading = getCurrentScysChapterHeading();
+  function getScysCourseExportRoot(options = {}) {
+    const heading = getCurrentScysChapterHeading() || findScysCourseHeadingByTitle(options.chapterTitle);
     if (!heading) {
+      const genericRoot = getGenericExportRoot();
+      if (genericRoot && genericRoot !== document.body) {
+        return genericRoot;
+      }
       throw new Error("未定位到当前章节标题");
     }
 
@@ -589,6 +595,22 @@
     }
 
     return section.querySelector(".document-container") || section.querySelector(".feishu-doc-content") || section;
+  }
+
+  function findScysCourseHeadingByTitle(title) {
+    const expected = cleanupInline(title);
+    if (!expected) {
+      return null;
+    }
+
+    const candidates = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6, [role='heading'], [class*='title']"));
+    return candidates.find((node) => {
+      if (!isVisible(node) || shouldSkipGenericElement(node) || node.closest("aside, nav, header, footer")) {
+        return false;
+      }
+      const text = cleanupInline(node.textContent || "");
+      return text === expected || text.includes(expected) || expected.includes(text);
+    }) || null;
   }
 
   function extractScysCourseEntriesFromSidebar() {
@@ -853,27 +875,30 @@
     return SCYS_LOAD_MORE_MARKERS.some((marker) => String(value || "").includes(marker));
   }
 
-  async function waitForScysCourseChapterReady(timeoutMs = 15000) {
+  async function waitForScysCourseChapterReady(options = {}, timeoutMs = 15000) {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
-      const heading = getCurrentScysChapterHeading();
       let root = null;
-      if (heading) {
-        try {
-          root = getScysCourseExportRoot();
-        } catch (error) {
-          root = null;
-        }
+      try {
+        root = getScysCourseExportRoot(options);
+      } catch (error) {
+        root = null;
       }
       const text = cleanupInline(root?.innerText || "");
-      if (heading && root && text.length > 20 && !containsScysCourseNoise(text)) {
+      const pageText = cleanupInline(`${text} ${extractVisibleTitle() || ""} ${document.title || ""}`);
+      if (root && text.length > 20 && isExpectedScysChapterText(pageText, options.chapterTitle) && !containsScysCourseNoise(text)) {
         return;
       }
       await sleep(250);
     }
 
     throw new Error("未定位到当前章节标题");
+  }
+
+  function isExpectedScysChapterText(text, title) {
+    const expected = cleanupInline(title);
+    return !expected || text.includes(expected);
   }
 
   async function exportGenericWebDocument(format, options) {
