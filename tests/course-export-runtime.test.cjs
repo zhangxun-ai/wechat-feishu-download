@@ -79,6 +79,83 @@ test("extracts readable markdown from SCYS chapter API payloads", () => {
   assert.match(markdown, /- 要点 B/);
 });
 
+test("extracts SCYS Feishu block trees without metadata noise", () => {
+  const markdown = extractScysCourseApiMarkdown({
+    status: 0,
+    data: {
+      chapter: {
+        content: [
+          {
+            block_id: "R1l0d0PIsoluA1xcqQXc4AYFnpd",
+            parent_id: "EmSWd2RSBoLS6sx7A7IcblkUnTh",
+            document_id: "EmSWd2RSBoLS6sx7A7IcblkUnTh",
+            block_type: 2,
+            text: {
+              elements: [
+                { text_run: { content: "亦仁说：想法至富的时代来了，前提是用好 AI。" } }
+              ]
+            }
+          },
+          {
+            block_id: "BVdsdCVlvoW3DsxdIrTcGNcnnAb",
+            parent_id: "EmSWd2RSBoLS6sx7A7IcblkUnTh",
+            document_id: "EmSWd2RSBoLS6sx7A7IcblkUnTh",
+            block_type: 34,
+            quote_container: {},
+            children_blocks: [
+              {
+                block_id: "Cy3NdINgEovzsbxTKUfcIgAKnGg",
+                parent_id: "BVdsdCVlvoW3DsxdIrTcGNcnnAb",
+                document_id: "EmSWd2RSBoLS6sx7A7IcblkUnTh",
+                block_type: 2,
+                text: {
+                  elements: [
+                    { text_run: { content: "AI 没替他思考，只是把他的思考放大了。" } },
+                    { mention_user: { user_id: "392" } }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            block_id: "VjWodIiPMo2clfxlDIVcfmIcnsf",
+            block_type: 12,
+            bullet: {
+              elements: [
+                { text_run: { content: "研究怎么把一句指令写得更准" } }
+              ]
+            }
+          },
+          {
+            block_id: "MynPbfrzqo4wMLxZwClcdwaYnwf",
+            block_type: 27,
+            image: { token: "MynPbfrzqo4wMLxZwClcdwaYnwf" },
+            file_url: "https://example.com/image.png"
+          }
+        ]
+      },
+      recent_users: [
+        {
+          id: 7974452,
+          name: "愿景成",
+          xq_group_number: 165230,
+          avatar: "https://search01.shengcaiyoushu.com/upload/avatar/noise"
+        }
+      ]
+    }
+  });
+
+  assert.match(markdown, /亦仁说：想法至富的时代来了，前提是用好 AI。/);
+  assert.match(markdown, /> AI 没替他思考，只是把他的思考放大了。/);
+  assert.match(markdown, /- 研究怎么把一句指令写得更准/);
+  assert.match(markdown, /!\[]\(https:\/\/example\.com\/image\.png\)/);
+  assert.doesNotMatch(markdown, /R1l0d0PIsoluA1xcqQXc4AYFnpd/);
+  assert.doesNotMatch(markdown, /EmSWd2RSBoLS6sx7A7IcblkUnTh/);
+  assert.doesNotMatch(markdown, /愿景成/);
+  assert.doesNotMatch(markdown, /search01\.shengcaiyoushu\.com/);
+  assert.doesNotMatch(markdown, /^392$/m);
+});
+
 test("detects SCYS API rate limit responses", () => {
   assert.equal(isScysCourseApiRateLimited({ status: 1, message: "操作过于频繁，请稍后再试" }), true);
   assert.equal(isScysCourseApiRateLimited({ status: 0, message: "ok" }), false);

@@ -190,6 +190,9 @@
     }
 
     if (Array.isArray(value)) {
+      if (value.some(isScysFeishuBlock)) {
+        return value.map((item) => convertScysFeishuBlock(item, 0)).filter(Boolean).join("\n\n");
+      }
       return value.map((item) => convertScysContentValue(item, seen)).filter(Boolean).join("\n\n");
     }
 
@@ -201,6 +204,10 @@
       return "";
     }
     seen.add(value);
+
+    if (isScysFeishuBlock(value)) {
+      return convertScysFeishuBlock(value, 0);
+    }
 
     const imageMarkdown = buildScysImageMarkdown(value);
     if (imageMarkdown) {
@@ -238,6 +245,76 @@
       .map(([, child]) => convertScysContentValue(child, seen))
       .filter(Boolean)
       .join("\n\n");
+  }
+
+  function isScysFeishuBlock(value) {
+    return Boolean(value && typeof value === "object" && (
+      value.block_type !== undefined
+      || value.block_id !== undefined
+      || value.text?.elements
+      || value.bullet?.elements
+      || value.ordered?.elements
+      || value.children_blocks
+    ));
+  }
+
+  function convertScysFeishuBlock(block, depth) {
+    if (!block || typeof block !== "object") {
+      return "";
+    }
+
+    if (block.image || block.file_url) {
+      return buildScysImageMarkdown({
+        type: "image",
+        src: block.file_url || block.image?.url || block.image?.src || "",
+        alt: block.image?.alt || block.image?.title || ""
+      });
+    }
+
+    const children = Array.isArray(block.children_blocks)
+      ? block.children_blocks.map((child) => convertScysFeishuBlock(child, depth + 1)).filter(Boolean)
+      : [];
+
+    if (block.quote_container) {
+      return children.join("\n\n")
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+    }
+
+    if (block.callout && children.length > 0) {
+      return children.join("\n\n");
+    }
+
+    const bulletText = convertScysFeishuTextElements(block.bullet?.elements);
+    if (bulletText) {
+      return `${"  ".repeat(depth)}- ${bulletText}`;
+    }
+
+    const orderedText = convertScysFeishuTextElements(block.ordered?.elements);
+    if (orderedText) {
+      const sequence = String(block.ordered?.style?.sequence || "").trim();
+      const marker = /^\d+$/.test(sequence) ? `${sequence}.` : "1.";
+      return `${"  ".repeat(depth)}${marker} ${orderedText}`;
+    }
+
+    const text = convertScysFeishuTextElements(block.text?.elements);
+    return [text, ...children].filter(Boolean).join("\n\n");
+  }
+
+  function convertScysFeishuTextElements(elements) {
+    if (!Array.isArray(elements)) {
+      return "";
+    }
+
+    return elements.map((element) => {
+      if (typeof element?.text_run?.content === "string") {
+        return element.text_run.content;
+      }
+
+      const mention = element?.mention_user;
+      return mention?.name || mention?.display_name || mention?.text || "";
+    }).join("").trim();
   }
 
   function convertScysContentString(value, seen) {
