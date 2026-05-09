@@ -174,3 +174,49 @@ test("builds grouped html nav with unique ids for duplicate titles", () => {
   assert.match(html, /section id="chapter-1-/);
   assert.match(html, /section id="chapter-2-/);
 });
+
+test("renders course html body with tables media links and code blocks", () => {
+  const html = buildCourseHtmlDocument({
+    title: "生财有术",
+    sourceUrl: "https://scys.com/course/detail/172?chapterId=11404",
+    exportedAt: "2026-05-09T00:00:00.000Z",
+    chapters: [
+      {
+        order: 1,
+        title: "02. AI 能力系统概览",
+        url: "https://scys.com/course/detail/172?chapterId=11404",
+        markdown: [
+          "#### 0. 本章概要",
+          "",
+          "| 能力 | 工具 |",
+          "| --- | --- |",
+          "| 思考能力 | **[Claude](https://claude.ai/)** 和 `code` |",
+          "",
+          "![示例图](https://example.com/image.png)",
+          "",
+          "[媒体链接](https://example.com/video.mp4)",
+          "",
+          "1. <u>第一步</u>",
+          "",
+          "> 引用内容",
+          "",
+          "```",
+          "const answer = 42;",
+          "```"
+        ].join("\n")
+      }
+    ],
+    failedChapters: []
+  });
+
+  assert.match(html, /<h4>0\. 本章概要<\/h4>/);
+  assert.match(html, /<table>/);
+  assert.match(html, /<th>能力<\/th>/);
+  assert.match(html, /<td>思考能力<\/td>/);
+  assert.match(html, /<strong><a href="https:\/\/claude\.ai\/" target="_blank" rel="noreferrer">Claude<\/a><\/strong> 和 <code>code<\/code>/);
+  assert.match(html, /<img src="https:\/\/example\.com\/image\.png" alt="示例图">/);
+  assert.match(html, /<a href="https:\/\/example\.com\/video\.mp4" target="_blank" rel="noreferrer">媒体链接<\/a>/);
+  assert.match(html, /<ol><li><u>第一步<\/u><\/li><\/ol>/);
+  assert.match(html, /<blockquote>引用内容<\/blockquote>/);
+  assert.match(html, /<pre><code>const answer = 42;<\/code><\/pre>/);
+});

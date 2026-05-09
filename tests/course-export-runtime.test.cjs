@@ -219,6 +219,95 @@ test("extracts SCYS Feishu table blocks as markdown tables", () => {
   assert.doesNotMatch(markdown, /^能力\n\n工具\n\n思考能力/m);
 });
 
+test("preserves SCYS Feishu headings code media grid and inline styles", () => {
+  const markdown = extractScysCourseApiMarkdown({
+    status: 0,
+    data: {
+      chapter: {
+        content: [
+          {
+            block_type: 6,
+            heading4: {
+              elements: [{ text_run: { content: "0. 本章概要" } }]
+            }
+          },
+          {
+            block_type: 14,
+            code: {
+              elements: [{ text_run: { content: "const answer = 42;" } }]
+            }
+          },
+          {
+            block_type: 22,
+            divider: {}
+          },
+          {
+            block_type: 23,
+            file_url: "https://example.com/video.mp4"
+          },
+          {
+            block_type: 24,
+            grid: { column_size: 2 },
+            children_blocks: [
+              {
+                block_type: 25,
+                grid_column: {},
+                children_blocks: [
+                  { block_type: 2, text: { elements: [{ text_run: { content: "左栏" } }] } }
+                ]
+              },
+              {
+                block_type: 25,
+                grid_column: {},
+                children_blocks: [
+                  { block_type: 2, text: { elements: [{ text_run: { content: "右栏" } }] } }
+                ]
+              }
+            ]
+          },
+          {
+            block_type: 2,
+            text: {
+              elements: [
+                { text_run: { content: "Claude", text_element_style: { bold: true, link: { url: "https://claude.ai/" } } } },
+                { text_run: { content: " 和 " } },
+                { text_run: { content: "code", text_element_style: { inline_code: true } } },
+                { text_run: { content: "；" } },
+                { text_run: { content: "【", text_element_style: { link: { url: "https://example.com/doc" } } } },
+                { text_run: { content: "AI", text_element_style: { link: { url: "https://example.com/doc" } } } },
+                { text_run: { content: " 工具怎么选】", text_element_style: { link: { url: "https://example.com/doc" } } } }
+              ]
+            }
+          },
+          {
+            block_type: 2,
+            text: {
+              elements: [
+                {
+                  mention_user: { user_id: "392" },
+                  text_run: {
+                    content: "{\"id\":308382,\"name\":\"条形马\",\"xq_group_number\":392,\"avatar\":\"https://example.com/avatar.png\"}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  });
+
+  assert.match(markdown, /#### 0\. 本章概要/);
+  assert.match(markdown, /```\nconst answer = 42;\n```/);
+  assert.match(markdown, /\n---\n/);
+  assert.match(markdown, /\[媒体链接\]\(https:\/\/example\.com\/video\.mp4\)/);
+  assert.match(markdown, /\| 左栏 \| 右栏 \|/);
+  assert.match(markdown, /\*\*\[Claude\]\(https:\/\/claude\.ai\/\)\*\* 和 `code`/);
+  assert.match(markdown, /\[【AI 工具怎么选】\]\(https:\/\/example\.com\/doc\)/);
+  assert.match(markdown, /条形马/);
+  assert.doesNotMatch(markdown, /xq_group_number/);
+});
+
 test("detects SCYS API rate limit responses", () => {
   assert.equal(isScysCourseApiRateLimited({ status: 1, message: "操作过于频繁，请稍后再试" }), true);
   assert.equal(isScysCourseApiRateLimited({ status: 0, message: "ok" }), false);

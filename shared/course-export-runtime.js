@@ -263,8 +263,29 @@
       return "";
     }
 
+    const headingMarkdown = convertScysFeishuHeading(block);
+    if (headingMarkdown) {
+      return headingMarkdown;
+    }
+
+    if (block.code) {
+      return convertScysFeishuCode(block);
+    }
+
+    if (block.divider) {
+      return "---";
+    }
+
     if (block.table) {
       return convertScysFeishuTable(block);
+    }
+
+    if (block.grid) {
+      return convertScysFeishuGrid(block);
+    }
+
+    if (Number(block.block_type) === 23 && block.file_url) {
+      return `[媒体链接](${block.file_url})`;
     }
 
     if (block.image || block.file_url) {
@@ -306,6 +327,29 @@
     return [text, ...children].filter(Boolean).join("\n\n");
   }
 
+  function convertScysFeishuHeading(block) {
+    for (let level = 1; level <= 9; level += 1) {
+      const heading = block[`heading${level}`];
+      if (!heading) {
+        continue;
+      }
+
+      const text = convertScysFeishuTextElements(heading.elements);
+      if (!text) {
+        return "";
+      }
+
+      return `${"#".repeat(Math.min(level, 6))} ${text}`;
+    }
+
+    return "";
+  }
+
+  function convertScysFeishuCode(block) {
+    const content = convertScysFeishuPlainTextElements(block.code?.elements).replace(/\n+$/, "");
+    return content ? `\`\`\`\n${content}\n\`\`\`` : "";
+  }
+
   function convertScysFeishuTable(block) {
     const columnCount = Number(block.table?.property?.column_size) || 0;
     const rowCount = Number(block.table?.property?.row_size) || 0;
@@ -344,6 +388,25 @@
     ].join("\n");
   }
 
+  function convertScysFeishuGrid(block) {
+    const columnCount = Number(block.grid?.column_size) || block.children_blocks?.length || 0;
+    if (columnCount <= 0) {
+      return "";
+    }
+
+    const columns = Array.from(block.children_blocks || [])
+      .slice(0, columnCount)
+      .map((column) => formatScysMarkdownTableCell(convertScysFeishuTableCell(column)));
+    if (columns.length === 0) {
+      return "";
+    }
+
+    return [
+      `| ${columns.join(" | ")} |`,
+      `| ${new Array(columns.length).fill("---").join(" | ")} |`
+    ].join("\n");
+  }
+
   function convertScysFeishuTableCell(cell) {
     if (!cell || typeof cell !== "object") {
       return "";
@@ -367,14 +430,129 @@
       return "";
     }
 
-    return elements.map((element) => {
-      if (typeof element?.text_run?.content === "string") {
-        return element.text_run.content;
+    return mergeScysTextRuns(elements).map((element) => {
+      if (element?.mention_user) {
+        return extractScysMentionText(element);
       }
 
-      const mention = element?.mention_user;
-      return mention?.name || mention?.display_name || mention?.text || "";
+      if (typeof element?.text_run?.content === "string") {
+        return applyScysTextStyle(element.text_run.content, element.text_run.text_element_style);
+      }
+
+      return "";
     }).join("").trim();
+  }
+
+  function mergeScysTextRuns(elements) {
+    const merged = [];
+
+    for (const element of elements) {
+      const previous = merged[merged.length - 1];
+      if (canMergeScysTextRun(previous, element)) {
+        previous.text_run.content += element.text_run.content;
+        continue;
+      }
+      merged.push(cloneScysInlineElement(element));
+    }
+
+    return merged;
+  }
+
+  function cloneScysInlineElement(element) {
+    if (!element?.text_run) {
+      return element;
+    }
+
+    return {
+      ...element,
+      text_run: {
+        ...element.text_run,
+        text_element_style: element.text_run.text_element_style
+          ? { ...element.text_run.text_element_style }
+          : element.text_run.text_element_style
+      }
+    };
+  }
+
+  function canMergeScysTextRun(left, right) {
+    if (typeof left?.text_run?.content !== "string" || typeof right?.text_run?.content !== "string") {
+      return false;
+    }
+
+    const leftStyle = left.text_run.text_element_style || {};
+    const rightStyle = right.text_run.text_element_style || {};
+    return getScysStyleKey(leftStyle) === getScysStyleKey(rightStyle);
+  }
+
+  function getScysStyleKey(style = {}) {
+    return JSON.stringify({
+      bold: Boolean(style.bold),
+      italic: Boolean(style.italic),
+      strikethrough: Boolean(style.strikethrough),
+      underline: Boolean(style.underline),
+      inline_code: Boolean(style.inline_code),
+      link: String(style.link?.url || "")
+    });
+  }
+
+  function convertScysFeishuPlainTextElements(elements) {
+    if (!Array.isArray(elements)) {
+      return "";
+    }
+
+    return elements.map((element) => {
+      if (element?.mention_user) {
+        return extractScysMentionText(element);
+      }
+      return typeof element?.text_run?.content === "string" ? element.text_run.content : "";
+    }).join("").trim();
+  }
+
+  function applyScysTextStyle(text, style = {}) {
+    let value = String(text || "");
+    if (!value) {
+      return "";
+    }
+
+    if (style.inline_code) {
+      value = `\`${value}\``;
+    }
+    if (style.strikethrough) {
+      value = `~~${value}~~`;
+    }
+    if (style.underline) {
+      value = `<u>${value}</u>`;
+    }
+    const linkUrl = String(style.link?.url || "").trim();
+    if (linkUrl) {
+      value = `[${value}](${linkUrl})`;
+    }
+    if (style.italic) {
+      value = `*${value}*`;
+    }
+    if (style.bold) {
+      value = `**${value}**`;
+    }
+
+    return value;
+  }
+
+  function extractScysMentionText(element) {
+    const mention = element?.mention_user || {};
+    const raw = String(element?.text_run?.content || "").trim();
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const name = String(parsed?.name || "").trim();
+        if (name) {
+          return name;
+        }
+      } catch (_) {
+        // Fall back to explicit mention fields below.
+      }
+    }
+
+    return String(mention.name || mention.display_name || mention.text || "").trim();
   }
 
   function convertScysContentString(value, seen) {
