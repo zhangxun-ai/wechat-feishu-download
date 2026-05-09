@@ -5,6 +5,9 @@ const {
   isBatchExportUrl,
   isScysCourseUrl
 } = require("../shared/export-url-utils.js");
+const {
+  isScysCourseParsedUrl
+} = require("../shared/scys-course-utils.js");
 
 function test(name, fn) {
   try {
@@ -39,6 +42,8 @@ test("rejects special pages and mp backend pages for generic export", () => {
 
 test("recognizes scys course chapter pages without widening batch scope", () => {
   assert.equal(isScysCourseUrl("https://scys.com/deepsea/2001/course/164?chapterId=11093"), true);
+  assert.equal(isScysCourseUrl("https://scys.com/course/detail/172?chapterId=11403"), true);
+  assert.equal(isScysCourseParsedUrl(new URL("https://scys.com/course/detail/172?chapterId=11403")), true);
   assert.equal(isScysCourseUrl("https://scys.com/deepsea/2001/course/164"), false);
   assert.equal(classifyExportUrl("https://scys.com/deepsea/2001/course/164?chapterId=11093"), "generic-web");
   assert.equal(isSingleExportUrl("https://scys.com/deepsea/2001/course/164?chapterId=11093"), true);

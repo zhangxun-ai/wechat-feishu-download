@@ -1,7 +1,10 @@
 (function (globalScope) {
   function isScysCourseParsedUrl(parsed) {
     return parsed.hostname === "scys.com"
-      && /^\/deepsea\/\d+\/course\/\d+/.test(parsed.pathname)
+      && (
+        /^\/deepsea\/\d+\/course\/\d+/.test(parsed.pathname)
+        || /^\/course\/detail\/\d+/.test(parsed.pathname)
+      )
       && parsed.searchParams.has("chapterId");
   }
 
