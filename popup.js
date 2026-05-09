@@ -11,6 +11,13 @@ const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || fals
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const isWechatMpBackendUrl = (url) => exportUrlUtils.isWechatMpBackendUrl?.(url) || false;
 const isScysCourseUrl = (url) => exportUrlUtils.isScysCourseUrl?.(url) || false;
+const isScysPageUrl = (url) => {
+  try {
+    return new URL(url).hostname === "scys.com";
+  } catch (error) {
+    return false;
+  }
+};
 const buildObsidianNoteFile = (payload) => obsidianExportApi.buildObsidianNoteFile?.(payload);
 const getPopupCategories = () => exportUiModels.getPopupCategories?.() || [];
 const getPopupPresets = () => exportUiModels.getPopupPresets?.() || [];
@@ -151,7 +158,8 @@ async function init() {
   detectedCategory = resolvePopupCategory({
     exportType: currentExportType,
     isWechatMpBackend: Boolean(tab.url && isWechatMpBackendUrl(tab.url)),
-    isScysCourse: Boolean(tab.url && isScysCourseUrl(tab.url))
+    isScysCourse: Boolean(tab.url && isScysCourseUrl(tab.url)),
+    isScysPage: Boolean(tab.url && isScysPageUrl(tab.url))
   });
   activeCategory = detectedCategory;
   setCourseExportAvailability(false, false);

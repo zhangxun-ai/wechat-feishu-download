@@ -69,6 +69,15 @@ async function main() {
     );
     assert.equal(
       resolvePopupCategory({
+        exportType: "generic-web",
+        isWechatMpBackend: false,
+        isScysCourse: false,
+        isScysPage: true
+      }),
+      "scys"
+    );
+    assert.equal(
+      resolvePopupCategory({
         exportType: "unsupported",
         isWechatMpBackend: true,
         isScysCourse: false

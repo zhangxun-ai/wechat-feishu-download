@@ -37,7 +37,7 @@
   }
 
   function resolvePopupCategory(input = {}) {
-    if (input.isScysCourse) {
+    if (input.isScysCourse || input.isScysPage) {
       return "scys";
     }
 
