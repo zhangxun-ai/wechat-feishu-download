@@ -156,6 +156,69 @@ test("extracts SCYS Feishu block trees without metadata noise", () => {
   assert.doesNotMatch(markdown, /^392$/m);
 });
 
+test("extracts SCYS Feishu table blocks as markdown tables", () => {
+  const markdown = extractScysCourseApiMarkdown({
+    status: 0,
+    data: {
+      chapter: {
+        content: [
+          {
+            block_id: "table-block",
+            block_type: 31,
+            table: {
+              cells: ["cell-1", "cell-2", "cell-3", "cell-4"],
+              property: {
+                row_size: 2,
+                column_size: 2
+              }
+            },
+            children_blocks: [
+              {
+                block_id: "cell-1",
+                block_type: 32,
+                table_cell: {},
+                children_blocks: [
+                  { block_type: 2, text: { elements: [{ text_run: { content: "能力" } }] } }
+                ]
+              },
+              {
+                block_id: "cell-2",
+                block_type: 32,
+                table_cell: {},
+                children_blocks: [
+                  { block_type: 2, text: { elements: [{ text_run: { content: "工具" } }] } }
+                ]
+              },
+              {
+                block_id: "cell-3",
+                block_type: 32,
+                table_cell: {},
+                children_blocks: [
+                  { block_type: 2, text: { elements: [{ text_run: { content: "思考能力" } }] } }
+                ]
+              },
+              {
+                block_id: "cell-4",
+                block_type: 32,
+                table_cell: {},
+                children_blocks: [
+                  { block_type: 2, text: { elements: [{ text_run: { content: "对话助手 / 文本生成" } }] } },
+                  { block_type: 2, text: { elements: [{ text_run: { content: "如 Claude、ChatGPT、Gemini" } }] } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  });
+
+  assert.match(markdown, /\| 能力 \| 工具 \|/);
+  assert.match(markdown, /\| --- \| --- \|/);
+  assert.match(markdown, /\| 思考能力 \| 对话助手 \/ 文本生成<br>如 Claude、ChatGPT、Gemini \|/);
+  assert.doesNotMatch(markdown, /^能力\n\n工具\n\n思考能力/m);
+});
+
 test("detects SCYS API rate limit responses", () => {
   assert.equal(isScysCourseApiRateLimited({ status: 1, message: "操作过于频繁，请稍后再试" }), true);
   assert.equal(isScysCourseApiRateLimited({ status: 0, message: "ok" }), false);

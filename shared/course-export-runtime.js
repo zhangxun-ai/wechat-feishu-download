@@ -263,6 +263,10 @@
       return "";
     }
 
+    if (block.table) {
+      return convertScysFeishuTable(block);
+    }
+
     if (block.image || block.file_url) {
       return buildScysImageMarkdown({
         type: "image",
@@ -300,6 +304,62 @@
 
     const text = convertScysFeishuTextElements(block.text?.elements);
     return [text, ...children].filter(Boolean).join("\n\n");
+  }
+
+  function convertScysFeishuTable(block) {
+    const columnCount = Number(block.table?.property?.column_size) || 0;
+    const rowCount = Number(block.table?.property?.row_size) || 0;
+    if (columnCount <= 0 || rowCount <= 0) {
+      return "";
+    }
+
+    const cellsById = new Map(
+      Array.from(block.children_blocks || [])
+        .filter((cell) => cell?.block_id)
+        .map((cell) => [cell.block_id, cell])
+    );
+    const cellIds = Array.isArray(block.table?.cells) ? block.table.cells : [];
+    const rows = [];
+
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      const row = [];
+      for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+        const cellIndex = rowIndex * columnCount + columnIndex;
+        const cell = cellsById.get(cellIds[cellIndex]) || block.children_blocks?.[cellIndex];
+        row.push(formatScysMarkdownTableCell(convertScysFeishuTableCell(cell)));
+      }
+      rows.push(row);
+    }
+
+    if (rows.length === 0) {
+      return "";
+    }
+
+    const header = rows[0];
+    const separator = new Array(columnCount).fill("---");
+    return [
+      `| ${header.join(" | ")} |`,
+      `| ${separator.join(" | ")} |`,
+      ...rows.slice(1).map((row) => `| ${row.join(" | ")} |`)
+    ].join("\n");
+  }
+
+  function convertScysFeishuTableCell(cell) {
+    if (!cell || typeof cell !== "object") {
+      return "";
+    }
+
+    return Array.from(cell.children_blocks || [])
+      .map((child) => convertScysFeishuBlock(child, 0))
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function formatScysMarkdownTableCell(value) {
+    return String(value || "")
+      .replace(/\|/g, "\\|")
+      .replace(/\r?\n+/g, "<br>")
+      .trim();
   }
 
   function convertScysFeishuTextElements(elements) {
