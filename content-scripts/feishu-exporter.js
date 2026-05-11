@@ -973,9 +973,10 @@
 
   function getGenericWebMeta() {
     const title = normalizeGenericTitle(
-      extractVisibleTitle()
+      extractGenericPageTitle()
       || document.querySelector('meta[property="og:title"]')?.getAttribute("content")
       || document.querySelector('meta[name="twitter:title"]')?.getAttribute("content")
+      || extractVisibleTitle()
       || document.title
     );
     const author = cleanupInline(
@@ -3378,6 +3379,37 @@
     return stripInvisibleText(String(value || ""))
       .replace(/\s*[\-|_·•｜|]\s*[^|｜\-_·•]{1,20}$/u, "")
       .trim() || "未命名网页";
+  }
+
+  function extractGenericPageTitle() {
+    const selector = [
+      ".post-detail-content h1",
+      ".post-detail-content [class*='title']",
+      "[class*='post-detail'] h1",
+      "[class*='article'] h1",
+      "[class*='entry'] h1",
+      ".article-title",
+      ".post-title",
+      ".entry-title"
+    ].join(", ");
+
+    const candidates = Array.from(document.querySelectorAll(selector));
+    for (const node of candidates) {
+      if (!isVisible(node) || isGenericBodyHeading(node)) {
+        continue;
+      }
+
+      const text = cleanupInline(node.textContent || "");
+      if (text) {
+        return text;
+      }
+    }
+
+    return "";
+  }
+
+  function isGenericBodyHeading(node) {
+    return Boolean(node.closest?.(".note-content, .feishu-doc-content, .doc-item, .vc-doc-item"));
   }
 
   function extractVisibleTitle() {
