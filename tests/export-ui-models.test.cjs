@@ -6,6 +6,7 @@ const {
   resolvePopupPresetState,
   normalizeOutputTarget,
   getOutputTargetState,
+  buildExportCompletionStatus,
   buildPrimaryActionModel
 } = require("../shared/export-ui-models.js");
 
@@ -121,6 +122,25 @@ async function main() {
       wantsObsidian: true,
       label: "仅 Obsidian"
     });
+  });
+
+  await test("builds completion feedback with the downloaded filename", async () => {
+    assert.equal(
+      buildExportCompletionStatus({
+        format: "markdown",
+        downloadedFilename: "一次性解决出海网络问题.md",
+        savedToObsidian: false
+      }),
+      "MARKDOWN 下载完成：一次性解决出海网络问题.md。"
+    );
+    assert.equal(
+      buildExportCompletionStatus({
+        format: "markdown",
+        downloadedFilename: "一次性解决出海网络问题.md",
+        savedToObsidian: true
+      }),
+      "MARKDOWN 下载完成：一次性解决出海网络问题.md，并已写入 Obsidian。"
+    );
   });
 
   await test("resolves popup preset state from output target and image choice", async () => {

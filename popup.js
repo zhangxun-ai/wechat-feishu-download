@@ -1,5 +1,6 @@
 const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
 const DEFAULT_HISTORY_RANGE_DAYS = 30;
+const DOWNLOAD_STATUS_TIMEOUT_MS = 5 * 60 * 1000;
 const WECHAT_MP_LOGIN_URL = "https://mp.weixin.qq.com/";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
 const exportUiModels = globalThis.ExportUiModels || {};
@@ -33,6 +34,7 @@ const getOutputTargetState = (value) => exportUiModels.getOutputTargetState?.(va
   wantsObsidian: false,
   label: "仅下载"
 };
+const buildExportCompletionStatus = (value) => exportUiModels.buildExportCompletionStatus?.(value) || "导出完成。";
 const buildPrimaryActionModel = (value) => exportUiModels.buildPrimaryActionModel?.(value) || {
   headline: "当前页",
   summary: "请先打开支持导出的页面。",
@@ -242,13 +244,15 @@ async function handleExport(format) {
     const shouldDownload = wantsDownload();
     const shouldSaveToObsidian = format === "markdown" && wantsObsidian();
     const filename = normalizeDownloadFilename(normalizedPayload.filename, format);
+    let downloadedFilename = "";
 
     if (shouldDownload) {
       const blob = new Blob([normalizedPayload.content], { type: normalizedPayload.mimeType });
       const url = URL.createObjectURL(blob);
 
       try {
-        await downloadWithFallback(url, filename, format, true);
+        const downloadOutcome = await downloadWithFallback(url, filename, format, true);
+        downloadedFilename = downloadOutcome?.filename || filename;
       } finally {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       }
@@ -264,15 +268,11 @@ async function handleExport(format) {
       obsidianMessage = "，并已写入 Obsidian";
     }
 
-    if (shouldDownload && shouldSaveToObsidian) {
-      setStatus(`${format.toUpperCase()} 已生成，浏览器将开始下载${obsidianMessage}。`, "ready");
-    } else if (shouldDownload) {
-      setStatus(`${format.toUpperCase()} 已生成，浏览器将开始下载。`, "ready");
-    } else if (shouldSaveToObsidian) {
-      setStatus(`${format.toUpperCase()} 已生成，并已写入 Obsidian。`, "ready");
-    } else {
-      setStatus(`${format.toUpperCase()} 已生成。`, "ready");
-    }
+    setStatus(buildExportCompletionStatus({
+      format,
+      downloadedFilename,
+      savedToObsidian: Boolean(obsidianMessage) || (shouldSaveToObsidian && !shouldDownload)
+    }), "ready");
   } catch (error) {
     if (format === "markdown" && error.message === "不支持的导出格式") {
       setStatus("当前页面还在运行旧版脚本，请刷新页面后再试。", "error");
@@ -675,7 +675,7 @@ async function openBatchRunner(jobId) {
   await openForegroundTab(url);
 }
 
-function downloadFile(options) {
+function startDownload(options) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download(options, (downloadId) => {
       if (chrome.runtime.lastError) {
@@ -683,9 +683,91 @@ function downloadFile(options) {
         return;
       }
 
+      if (!downloadId) {
+        reject(new Error("下载未启动。"));
+        return;
+      }
+
       resolve(downloadId);
     });
   });
+}
+
+async function downloadFile(options) {
+  const downloadId = await startDownload(options);
+  return waitForDownloadCompletion(downloadId, options.filename);
+}
+
+function waitForDownloadCompletion(downloadId, fallbackFilename) {
+  if (!downloadId || !chrome.downloads?.onChanged?.addListener) {
+    return Promise.resolve({ downloadId, filename: getDownloadDisplayFilename(null, fallbackFilename) });
+  }
+
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("下载状态确认超时，请在浏览器下载列表查看结果。")));
+    }, DOWNLOAD_STATUS_TIMEOUT_MS);
+
+    const listener = (delta) => {
+      if (delta?.id !== downloadId || !delta.state?.current) {
+        return;
+      }
+
+      if (delta.state.current === "complete") {
+        finish(async () => {
+          const item = await getDownloadItem(downloadId);
+          resolve({ downloadId, filename: getDownloadDisplayFilename(item, fallbackFilename) });
+        });
+      }
+
+      if (delta.state.current === "interrupted") {
+        const reason = String(delta.error?.current || "").trim();
+        finish(() => reject(new Error(reason ? `下载失败：${reason}` : "下载失败，已中断。")));
+      }
+    };
+
+    function finish(callback) {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timer);
+      chrome.downloads.onChanged.removeListener(listener);
+      Promise.resolve(callback()).catch(reject);
+    }
+
+    chrome.downloads.onChanged.addListener(listener);
+    getDownloadItem(downloadId).then((item) => {
+      if (item?.state === "complete") {
+        finish(() => resolve({ downloadId, filename: getDownloadDisplayFilename(item, fallbackFilename) }));
+      } else if (item?.state === "interrupted") {
+        finish(() => reject(new Error("下载失败，已中断。")));
+      }
+    }).catch(() => null);
+  });
+}
+
+function getDownloadItem(downloadId) {
+  return new Promise((resolve, reject) => {
+    if (!chrome.downloads?.search) {
+      resolve(null);
+      return;
+    }
+
+    chrome.downloads.search({ id: downloadId }, (items) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(Array.isArray(items) ? items[0] || null : null);
+    });
+  });
+}
+
+function getDownloadDisplayFilename(item, fallbackFilename) {
+  const raw = String(item?.filename || fallbackFilename || "").trim();
+  return raw.split(/[\\/]/).filter(Boolean).pop() || raw || "";
 }
 
 function storageSet(items) {

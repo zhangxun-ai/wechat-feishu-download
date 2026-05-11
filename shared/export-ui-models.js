@@ -95,6 +95,26 @@
     return { key: "custom", label: "自定义组合" };
   }
 
+  function buildExportCompletionStatus(input = {}) {
+    const format = String(input.format || "markdown").toUpperCase();
+    const downloadedFilename = String(input.downloadedFilename || "").trim();
+    const savedToObsidian = input.savedToObsidian === true;
+
+    if (downloadedFilename && savedToObsidian) {
+      return `${format} 下载完成：${downloadedFilename}，并已写入 Obsidian。`;
+    }
+
+    if (downloadedFilename) {
+      return `${format} 下载完成：${downloadedFilename}。`;
+    }
+
+    if (savedToObsidian) {
+      return `${format} 已生成，并已写入 Obsidian。`;
+    }
+
+    return `${format} 已生成。`;
+  }
+
   function buildPrimaryActionModel(input = {}) {
     const pageInfo = input.pageInfo || null;
     const supportsMarkdown = Array.isArray(pageInfo?.supports) && pageInfo.supports.includes("markdown");
@@ -194,6 +214,7 @@
     resolvePopupPresetState,
     normalizeOutputTarget,
     getOutputTargetState,
+    buildExportCompletionStatus,
     buildPrimaryActionModel
   };
 
