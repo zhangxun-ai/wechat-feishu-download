@@ -3467,6 +3467,10 @@
       return codeBlockToMarkdown(node);
     }
 
+    if (isScysRenderedTableBlock(node)) {
+      return scysRenderedTableToMarkdown(node);
+    }
+
     if (tagName === "table") {
       return tableToMarkdown(node);
     }
@@ -3602,6 +3606,69 @@
     }
 
     return `${"  ".repeat(depth)}${normalizedMarker} ${content}`;
+  }
+
+  function isScysRenderedTableBlock(node) {
+    return node instanceof Element
+      && node.classList.contains("table")
+      && getScysRenderedTableColumnCount(node) > 0;
+  }
+
+  function getScysRenderedTableColumnCount(node) {
+    const className = typeof node.className === "string" ? node.className : "";
+    const classMatch = className.match(/\btable_(\d+)\b/);
+    if (classMatch) {
+      return Number(classMatch[1]) || 0;
+    }
+
+    const gridStyle = node.children?.[0]?.getAttribute?.("style") || "";
+    const styleMatch = gridStyle.match(/grid-template-columns\s*:\s*([^;]+)/i);
+    if (!styleMatch) {
+      return 0;
+    }
+
+    const repeatMatch = styleMatch[1].match(/repeat\(\s*(\d+)\s*,/i);
+    if (repeatMatch) {
+      return Number(repeatMatch[1]) || 0;
+    }
+
+    return styleMatch[1].split(/\s+/).filter(Boolean).length;
+  }
+
+  function scysRenderedTableToMarkdown(tableNode) {
+    const columnCount = getScysRenderedTableColumnCount(tableNode);
+    const cells = Array.from(tableNode.querySelectorAll(".table_cell"))
+      .map((cell) => escapeMarkdownTableCell(convertScysRenderedTableCell(cell)));
+
+    if (columnCount <= 0 || cells.length === 0) {
+      return "";
+    }
+
+    const rows = [];
+    for (let index = 0; index < cells.length; index += columnCount) {
+      const row = cells.slice(index, index + columnCount);
+      while (row.length < columnCount) {
+        row.push("");
+      }
+      rows.push(row);
+    }
+
+    const header = rows[0];
+    const separator = new Array(columnCount).fill("---");
+    return [
+      `| ${header.join(" | ")} |`,
+      `| ${separator.join(" | ")} |`,
+      ...rows.slice(1).map((row) => `| ${row.join(" | ")} |`)
+    ].join("\n");
+  }
+
+  function convertScysRenderedTableCell(cell) {
+    return cleanupMarkdown(
+      Array.from(cell.childNodes)
+        .map((child) => convertBlock(child, 0))
+        .filter(Boolean)
+        .join("\n")
+    );
   }
 
   function listToMarkdown(listNode, depth) {
@@ -3768,5 +3835,13 @@
         .replace(/!\[[^\]]*]\([^)]+\)/g, "")
         .replace(/<img\b[^>]*>/gi, "")
     );
+  }
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      __test: {
+        convertBlock
+      }
+    };
   }
 })();
