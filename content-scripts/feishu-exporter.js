@@ -973,9 +973,9 @@
 
   function getGenericWebMeta() {
     const title = normalizeGenericTitle(
-      document.querySelector('meta[property="og:title"]')?.getAttribute("content")
+      extractVisibleTitle()
+      || document.querySelector('meta[property="og:title"]')?.getAttribute("content")
       || document.querySelector('meta[name="twitter:title"]')?.getAttribute("content")
-      || extractVisibleTitle()
       || document.title
     );
     const author = cleanupInline(
@@ -3840,7 +3840,8 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
       __test: {
-        convertBlock
+        convertBlock,
+        getGenericWebMeta
       }
     };
   }
