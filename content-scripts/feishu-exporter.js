@@ -23,7 +23,6 @@
   const WECHAT_MP_HISTORY_SCAN_LIMIT = 500;
   const WECHAT_MP_PAGE_DELAY_MS = 250;
   const FEISHU_API_TIMEOUT_MS = 30000;
-  const FEISHU_IMAGE_FETCH_TIMEOUT_MS = 15000;
   const TYPE_MAP = {
     22: "docx",
     2: "docs",
@@ -2169,7 +2168,7 @@
     const context = {
       blockMap,
       includeImages: options.includeImages !== false,
-      imageMap: options.includeImages === false ? new Map() : await buildEmbeddedImageMap(blockMap, options.imageFetchTimeoutMs),
+      imageMap: options.includeImages === false ? new Map() : buildLinkedImageMap(blockMap),
       sheetMap: await buildSheetMarkdownMap(meta, blockMap),
       rootId: meta.exportToken,
       pageTitle: meta.title
@@ -2334,9 +2333,9 @@
     return imageMap;
   }
 
-  async function buildEmbeddedImageMap(blockMap, timeoutMs = FEISHU_IMAGE_FETCH_TIMEOUT_MS) {
+  function buildLinkedImageMap(blockMap) {
     const imageMap = extractImageMapFromDom();
-    const embeddedMap = new Map();
+    const linkedMap = new Map();
     const imageBlocks = Object.entries(blockMap).filter(([, block]) => block?.data?.type === "image");
 
     for (const [blockId, block] of imageBlocks) {
@@ -2345,11 +2344,10 @@
         continue;
       }
 
-      const embeddedSrc = await fetchImageAsDataUrl(src, timeoutMs);
-      embeddedMap.set(blockId, embeddedSrc || src);
+      linkedMap.set(blockId, src);
     }
 
-    return embeddedMap;
+    return linkedMap;
   }
 
   async function buildSheetMarkdownMap(meta, blockMap) {
@@ -3016,29 +3014,6 @@
 
   function escapeMarkdownTableCell(value) {
     return String(value || "").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
-  }
-
-  async function fetchImageAsDataUrl(src, timeoutMs = FEISHU_IMAGE_FETCH_TIMEOUT_MS) {
-    try {
-      const response = await fetchWithTimeout(src, { credentials: "include" }, timeoutMs);
-      if (!response.ok) {
-        return "";
-      }
-
-      const blob = await response.blob();
-      return await blobToDataUrl(blob);
-    } catch (error) {
-      return "";
-    }
-  }
-
-  function blobToDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(reader.error || new Error("图片读取失败"));
-      reader.readAsDataURL(blob);
-    });
   }
 
   function buildImageUrl(blockId, block) {

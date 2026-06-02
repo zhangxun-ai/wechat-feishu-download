@@ -85,7 +85,7 @@ async function assertSettlesWithin(promise, timeoutMs) {
   let fetchCalls = 0;
   const exporter = loadExporterForTest(() => {
     fetchCalls += 1;
-    return new Promise(() => {});
+    throw new Error("不应下载图片字节");
   });
 
   const markdown = await assertSettlesWithin(
@@ -104,6 +104,7 @@ async function assertSettlesWithin(promise, timeoutMs) {
     100
   );
 
-  assert.equal(fetchCalls, 1);
+  assert.equal(fetchCalls, 0);
+  assert.doesNotMatch(markdown, /data:image\//);
   assert.match(markdown, /!\[配图]\(https:\/\/internal-api-drive-stream\.feishu\.cn\/space\/api\/box\/stream\/download\/v2\/cover\/imageToken\//);
 })();
