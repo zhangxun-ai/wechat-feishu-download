@@ -1414,7 +1414,7 @@ function buildDownloadBlob(payload, filename) {
   }
 
   const zip = new SimpleZipBuilder();
-  zip.addText(filename, payload.content);
+  zip.addText("document.md", payload.content);
   for (const asset of assets) {
     zip.addBytes(asset.path, base64ToUint8Array(asset.contentBase64));
   }

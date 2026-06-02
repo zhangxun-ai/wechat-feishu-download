@@ -113,10 +113,10 @@ async function assertSettlesWithin(promise, timeoutMs) {
   assert.equal(fetchCalls, 1);
   assert.doesNotMatch(markdown, /data:image\//);
   assert.doesNotMatch(markdown, /internal-api-drive-stream\.feishu\.cn/);
-  assert.match(markdown, /!\[配图]\(测试文档-assets\/image-001\.png\)/);
+  assert.match(markdown, /!\[配图]\(assets\/image-001\.png\)/);
   assert.deepEqual(JSON.parse(JSON.stringify(assets)), [
     {
-      path: "测试文档-assets/image-001.png",
+      path: "assets/image-001.png",
       mimeType: "image/png",
       contentBase64: "aW1hZ2UtYnl0ZXM="
     }

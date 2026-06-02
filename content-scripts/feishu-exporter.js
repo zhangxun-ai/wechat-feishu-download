@@ -3072,18 +3072,7 @@
   }
 
   function buildAssetFolderName(title) {
-    const cleaned = sanitizeAssetPathSegment(title || "feishu-document");
-    return `${cleaned || "feishu-document"}-assets`;
-  }
-
-  function sanitizeAssetPathSegment(value) {
-    return String(value || "")
-      .replace(/[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]/g, "_")
-      .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/[. ]+$/g, "")
-      .slice(0, 80);
+    return "assets";
   }
 
   function guessImageMimeType(block) {
