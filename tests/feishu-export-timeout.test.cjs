@@ -83,10 +83,14 @@ async function assertSettlesWithin(promise, timeoutMs) {
 
 (async () => {
   let fetchCalls = 0;
-  const exporter = loadExporterForTest(() => {
+  const exporter = loadExporterForTest(async () => {
     fetchCalls += 1;
-    throw new Error("不应下载图片字节");
+    return {
+      ok: true,
+      blob: async () => new Blob(["image-bytes"], { type: "image/png" })
+    };
   });
+  const assets = [];
 
   const markdown = await assertSettlesWithin(
     exporter.convertClientVarsToMarkdown(
@@ -98,13 +102,23 @@ async function assertSettlesWithin(promise, timeoutMs) {
       buildClientVarsWithImage(),
       {
         includeImages: true,
-        imageFetchTimeoutMs: 20
+        localImageAssets: true,
+        imageFetchTimeoutMs: 20,
+        assets
       }
     ),
     100
   );
 
-  assert.equal(fetchCalls, 0);
+  assert.equal(fetchCalls, 1);
   assert.doesNotMatch(markdown, /data:image\//);
-  assert.match(markdown, /!\[配图]\(https:\/\/internal-api-drive-stream\.feishu\.cn\/space\/api\/box\/stream\/download\/v2\/cover\/imageToken\//);
+  assert.doesNotMatch(markdown, /internal-api-drive-stream\.feishu\.cn/);
+  assert.match(markdown, /!\[配图]\(测试文档-assets\/image-001\.png\)/);
+  assert.deepEqual(JSON.parse(JSON.stringify(assets)), [
+    {
+      path: "测试文档-assets/image-001.png",
+      mimeType: "image/png",
+      contentBase64: "aW1hZ2UtYnl0ZXM="
+    }
+  ]);
 })();

@@ -381,7 +381,11 @@
 
     if (format === "markdown") {
       const clientVars = await fetchClientVars(meta.exportToken, meta.jssdkSession);
-      let markdownBody = await convertClientVarsToMarkdown(meta, clientVars, options);
+      const assets = [];
+      let markdownBody = await convertClientVarsToMarkdown(meta, clientVars, {
+        ...options,
+        assets
+      });
       markdownBody = maybeReplaceFeishuMarkdownWithDom(markdownBody);
       if (options.includeImages === false) {
         markdownBody = stripMarkdownImages(markdownBody);
@@ -391,7 +395,8 @@
       return {
         filename: buildFilename(meta.title, "md"),
         mimeType: "text/markdown;charset=utf-8",
-        content: markdown
+        content: markdown,
+        assets
       };
     }
 
@@ -2168,7 +2173,11 @@
     const context = {
       blockMap,
       includeImages: options.includeImages !== false,
-      imageMap: options.includeImages === false ? new Map() : buildLinkedImageMap(blockMap),
+      imageMap: options.includeImages === false
+        ? new Map()
+        : options.localImageAssets === true
+          ? await buildLocalImageMap(blockMap, meta, options)
+          : buildLinkedImageMap(blockMap),
       sheetMap: await buildSheetMarkdownMap(meta, blockMap),
       rootId: meta.exportToken,
       pageTitle: meta.title
@@ -2333,10 +2342,13 @@
     return imageMap;
   }
 
-  function buildLinkedImageMap(blockMap) {
+  async function buildLocalImageMap(blockMap, meta, options = {}) {
     const imageMap = extractImageMapFromDom();
     const linkedMap = new Map();
     const imageBlocks = Object.entries(blockMap).filter(([, block]) => block?.data?.type === "image");
+    const assets = Array.isArray(options.assets) ? options.assets : [];
+    const assetFolder = buildAssetFolderName(meta.title);
+    let assetIndex = assets.length + 1;
 
     for (const [blockId, block] of imageBlocks) {
       const src = imageMap.get(blockId) || buildImageUrl(blockId, block);
@@ -2344,7 +2356,29 @@
         continue;
       }
 
-      linkedMap.set(blockId, src);
+      const asset = await fetchImageAsAsset(src, block, assetFolder, assetIndex, options.imageFetchTimeoutMs);
+      if (asset) {
+        assets.push(asset);
+        linkedMap.set(blockId, asset.path);
+        assetIndex += 1;
+      } else {
+        linkedMap.set(blockId, src);
+      }
+    }
+
+    return linkedMap;
+  }
+
+  function buildLinkedImageMap(blockMap) {
+    const imageMap = extractImageMapFromDom();
+    const linkedMap = new Map();
+    const imageBlocks = Object.entries(blockMap).filter(([, block]) => block?.data?.type === "image");
+
+    for (const [blockId, block] of imageBlocks) {
+      const src = imageMap.get(blockId) || buildImageUrl(blockId, block);
+      if (src) {
+        linkedMap.set(blockId, src);
+      }
     }
 
     return linkedMap;
@@ -3014,6 +3048,93 @@
 
   function escapeMarkdownTableCell(value) {
     return String(value || "").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
+  }
+
+  async function fetchImageAsAsset(src, block, assetFolder, assetIndex, timeoutMs = FEISHU_API_TIMEOUT_MS) {
+    try {
+      const response = await fetchWithTimeout(src, { credentials: "include" }, timeoutMs);
+      if (!response.ok) {
+        return null;
+      }
+
+      const blob = await response.blob();
+      const mimeType = blob.type || guessImageMimeType(block) || "application/octet-stream";
+      const extension = getImageExtension(mimeType, block);
+      const buffer = await blob.arrayBuffer();
+      return {
+        path: `${assetFolder}/image-${String(assetIndex).padStart(3, "0")}.${extension}`,
+        mimeType,
+        contentBase64: arrayBufferToBase64(buffer)
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function buildAssetFolderName(title) {
+    const cleaned = sanitizeAssetPathSegment(title || "feishu-document");
+    return `${cleaned || "feishu-document"}-assets`;
+  }
+
+  function sanitizeAssetPathSegment(value) {
+    return String(value || "")
+      .replace(/[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]/g, "_")
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[. ]+$/g, "")
+      .slice(0, 80);
+  }
+
+  function guessImageMimeType(block) {
+    const name = String(block?.data?.image?.name || "").toLowerCase();
+    if (name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+      return "image/jpeg";
+    }
+    if (name.endsWith(".webp")) {
+      return "image/webp";
+    }
+    if (name.endsWith(".gif")) {
+      return "image/gif";
+    }
+    if (name.endsWith(".png")) {
+      return "image/png";
+    }
+    return "";
+  }
+
+  function getImageExtension(mimeType, block) {
+    const name = String(block?.data?.image?.name || "").toLowerCase();
+    const extMatch = name.match(/\.([a-z0-9]{2,5})$/);
+    if (extMatch) {
+      return extMatch[1] === "jpeg" ? "jpg" : extMatch[1];
+    }
+    if (mimeType === "image/jpeg") {
+      return "jpg";
+    }
+    if (mimeType === "image/webp") {
+      return "webp";
+    }
+    if (mimeType === "image/gif") {
+      return "gif";
+    }
+    if (mimeType === "image/png") {
+      return "png";
+    }
+    return "bin";
+  }
+
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    let binary = "";
+
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const slice = bytes.subarray(index, index + chunkSize);
+      binary += String.fromCharCode(...slice);
+    }
+
+    return btoa(binary);
   }
 
   function buildImageUrl(blockId, block) {
