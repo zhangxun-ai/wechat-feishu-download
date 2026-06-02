@@ -22,6 +22,8 @@
   const WECHAT_MP_SEED_SCAN_LIMIT = 80;
   const WECHAT_MP_HISTORY_SCAN_LIMIT = 500;
   const WECHAT_MP_PAGE_DELAY_MS = 250;
+  const FEISHU_API_TIMEOUT_MS = 30000;
+  const FEISHU_IMAGE_FETCH_TIMEOUT_MS = 15000;
   const TYPE_MAP = {
     22: "docx",
     2: "docs",
@@ -1231,10 +1233,15 @@
 
   async function resolveWikiToken(wikiToken, jssdkSession) {
     const url = `${location.origin}/space/api/wiki/v2/tree/get_node/?wiki_token=${encodeURIComponent(wikiToken)}`;
-    const response = await fetch(url, {
-      credentials: "include",
-      headers: buildHeaders(jssdkSession)
-    });
+    let response;
+    try {
+      response = await fetchWithTimeout(url, {
+        credentials: "include",
+        headers: buildHeaders(jssdkSession)
+      }, FEISHU_API_TIMEOUT_MS);
+    } catch (error) {
+      throw new Error(`获取 wiki 信息失败: ${getNetworkErrorMessage(error)}`);
+    }
 
     if (!response.ok) {
       throw new Error(`获取 wiki 信息失败: ${response.status}`);
@@ -1254,10 +1261,15 @@
 
   async function fetchClientVars(docToken, jssdkSession) {
     const url = `${location.origin}/space/api/docx/pages/client_vars?id=${encodeURIComponent(docToken)}`;
-    const response = await fetch(url, {
-      credentials: "include",
-      headers: buildHeaders(jssdkSession)
-    });
+    let response;
+    try {
+      response = await fetchWithTimeout(url, {
+        credentials: "include",
+        headers: buildHeaders(jssdkSession)
+      }, FEISHU_API_TIMEOUT_MS);
+    } catch (error) {
+      throw new Error(`获取 docx 数据失败: ${getNetworkErrorMessage(error)}`);
+    }
 
     if (!response.ok) {
       throw new Error(`获取 docx 数据失败: ${response.status}`);
@@ -1273,6 +1285,47 @@
 
   function buildHeaders(jssdkSession) {
     return jssdkSession ? { "jssdk-session": jssdkSession } : {};
+  }
+
+  async function fetchWithTimeout(url, options, timeoutMs) {
+    const normalizedTimeoutMs = Number(timeoutMs) || 0;
+    if (normalizedTimeoutMs <= 0) {
+      return fetch(url, options);
+    }
+
+    if (typeof AbortController === "function") {
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, normalizedTimeoutMs);
+
+      try {
+        return await fetch(url, {
+          ...options,
+          signal: controller.signal
+        });
+      } catch (error) {
+        if (timedOut) {
+          throw new Error("请求超时");
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    return Promise.race([
+      fetch(url, options),
+      new Promise((resolve, reject) => {
+        setTimeout(() => reject(new Error("请求超时")), normalizedTimeoutMs);
+      })
+    ]);
+  }
+
+  function getNetworkErrorMessage(error) {
+    return error?.message || error?.name || "网络请求失败";
   }
 
   function getWechatArticleMeta() {
@@ -2116,7 +2169,7 @@
     const context = {
       blockMap,
       includeImages: options.includeImages !== false,
-      imageMap: options.includeImages === false ? new Map() : await buildEmbeddedImageMap(blockMap),
+      imageMap: options.includeImages === false ? new Map() : await buildEmbeddedImageMap(blockMap, options.imageFetchTimeoutMs),
       sheetMap: await buildSheetMarkdownMap(meta, blockMap),
       rootId: meta.exportToken,
       pageTitle: meta.title
@@ -2281,7 +2334,7 @@
     return imageMap;
   }
 
-  async function buildEmbeddedImageMap(blockMap) {
+  async function buildEmbeddedImageMap(blockMap, timeoutMs = FEISHU_IMAGE_FETCH_TIMEOUT_MS) {
     const imageMap = extractImageMapFromDom();
     const embeddedMap = new Map();
     const imageBlocks = Object.entries(blockMap).filter(([, block]) => block?.data?.type === "image");
@@ -2292,7 +2345,7 @@
         continue;
       }
 
-      const embeddedSrc = await fetchImageAsDataUrl(src);
+      const embeddedSrc = await fetchImageAsDataUrl(src, timeoutMs);
       embeddedMap.set(blockId, embeddedSrc || src);
     }
 
@@ -2321,7 +2374,7 @@
     }
 
     try {
-      const response = await fetch("https://internal-api-space.feishu.cn/space/api/ssr/docx/blocks/", {
+      const response = await fetchWithTimeout("https://internal-api-space.feishu.cn/space/api/ssr/docx/blocks/", {
         method: "POST",
         credentials: "include",
         headers: {
@@ -2335,7 +2388,7 @@
             biz: meta.pageType === "wiki" ? "wiki" : "docx"
           }
         })
-      });
+      }, FEISHU_API_TIMEOUT_MS);
 
       if (!response.ok) {
         return new Map();
@@ -2965,9 +3018,9 @@
     return String(value || "").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
   }
 
-  async function fetchImageAsDataUrl(src) {
+  async function fetchImageAsDataUrl(src, timeoutMs = FEISHU_IMAGE_FETCH_TIMEOUT_MS) {
     try {
-      const response = await fetch(src, { credentials: "include" });
+      const response = await fetchWithTimeout(src, { credentials: "include" }, timeoutMs);
       if (!response.ok) {
         return "";
       }
