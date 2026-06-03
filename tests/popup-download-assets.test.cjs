@@ -35,12 +35,44 @@ function loadDownloadHelpersForTest() {
   };
 
   vm.runInNewContext(
-    `${source.slice(start, end)}\nthis.downloadExportPayload = downloadExportPayload;`,
+    `${source.slice(start, end)}\nthis.downloadExportPayload = downloadExportPayload;\nthis.writeExportPayloadToDirectory = writeExportPayloadToDirectory;`,
     sandbox,
     { filename: sourcePath }
   );
 
-  return { downloadExportPayload: sandbox.downloadExportPayload, calls, revokedUrls };
+  return {
+    downloadExportPayload: sandbox.downloadExportPayload,
+    writeExportPayloadToDirectory: sandbox.writeExportPayloadToDirectory,
+    calls,
+    revokedUrls
+  };
+}
+
+function createDirectoryHandleForTest() {
+  const writes = [];
+
+  function createDirectory(pathParts) {
+    return {
+      async getDirectoryHandle(name) {
+        return createDirectory([...pathParts, name]);
+      },
+      async getFileHandle(name) {
+        const filePath = [...pathParts, name].join("/");
+        return {
+          async createWritable() {
+            return {
+              async write(content) {
+                writes.push({ path: filePath, content });
+              },
+              async close() {}
+            };
+          }
+        };
+      }
+    };
+  }
+
+  return { handle: createDirectory([]), writes };
 }
 
 (async () => {
@@ -71,6 +103,36 @@ function loadDownloadHelpersForTest() {
     assert.equal(calls.every((call) => call.saveAs === false), true);
     assert.equal(calls.some((call) => call.filename.endsWith(".zip")), false);
     assert.deepEqual(revokedUrls, ["blob:test-1", "blob:test-2"]);
+  }
+
+  {
+    const { writeExportPayloadToDirectory, calls } = loadDownloadHelpersForTest();
+    const { handle, writes } = createDirectoryHandleForTest();
+
+    const result = await writeExportPayloadToDirectory(
+      {
+        mimeType: "text/markdown;charset=utf-8",
+        content: "# 文档\n\n![配图](assets/image-001.png)\n",
+        assets: [
+          {
+            path: "assets/image-001.png",
+            mimeType: "image/png",
+            contentBase64: "aW1n"
+          }
+        ]
+      },
+      "Obsidian + Claude cod...我的 AI 知识库拆解.md",
+      handle
+    );
+
+    assert.equal(result.filename, "Obsidian + Claude cod...我的 AI 知识库拆解/document.md");
+    assert.deepEqual(writes.map((item) => item.path), [
+      "Obsidian + Claude cod...我的 AI 知识库拆解/document.md",
+      "Obsidian + Claude cod...我的 AI 知识库拆解/assets/image-001.png"
+    ]);
+    assert.equal(writes[0].content, "# 文档\n\n![配图](assets/image-001.png)\n");
+    assert.deepEqual(Array.from(writes[1].content), [105, 109, 103]);
+    assert.equal(calls.length, 0);
   }
 
   {
