@@ -6,17 +6,27 @@ const vm = require("node:vm");
 function loadDownloadHelpersForTest() {
   const sourcePath = path.join(__dirname, "../popup.js");
   const source = fs.readFileSync(sourcePath, "utf8");
-  const start = source.indexOf("async function downloadExportPayload");
+  const start = source.indexOf("function shouldUseDirectoryAssetDownload");
   const end = source.indexOf("function forceStripWechatNoiseTail");
 
-  assert.ok(start >= 0, "downloadExportPayload not found");
+  assert.ok(start >= 0, "download asset helper block not found");
   assert.ok(end > start, "download helper block not found");
 
   const calls = [];
   const revokedUrls = [];
+  const directoryPickerCalls = [];
+  const directoryHandle = {};
   const sandbox = {
     Blob,
     Uint8Array,
+    includeImagesInput: { checked: true },
+    currentExportType: "feishu",
+    globalThis: {
+      showDirectoryPicker: async (options) => {
+        directoryPickerCalls.push(options);
+        return directoryHandle;
+      }
+    },
     atob: (value) => Buffer.from(value, "base64").toString("binary"),
     setTimeout: (callback) => {
       callback();
@@ -35,7 +45,12 @@ function loadDownloadHelpersForTest() {
   };
 
   vm.runInNewContext(
-    `${source.slice(start, end)}\nthis.downloadExportPayload = downloadExportPayload;\nthis.writeExportPayloadToDirectory = writeExportPayloadToDirectory;`,
+    [
+      source.slice(start, end),
+      "this.downloadExportPayload = downloadExportPayload;",
+      "this.writeExportPayloadToDirectory = writeExportPayloadToDirectory;",
+      "this.pickAssetDownloadDirectory = pickAssetDownloadDirectory;"
+    ].join("\n"),
     sandbox,
     { filename: sourcePath }
   );
@@ -43,8 +58,11 @@ function loadDownloadHelpersForTest() {
   return {
     downloadExportPayload: sandbox.downloadExportPayload,
     writeExportPayloadToDirectory: sandbox.writeExportPayloadToDirectory,
+    pickAssetDownloadDirectory: sandbox.pickAssetDownloadDirectory,
     calls,
-    revokedUrls
+    revokedUrls,
+    directoryPickerCalls,
+    directoryHandle
   };
 }
 
@@ -76,6 +94,18 @@ function createDirectoryHandleForTest() {
 }
 
 (async () => {
+  {
+    const { pickAssetDownloadDirectory, directoryPickerCalls, directoryHandle } = loadDownloadHelpersForTest();
+
+    const result = await pickAssetDownloadDirectory();
+
+    assert.equal(result, directoryHandle);
+    assert.equal(directoryPickerCalls.length, 1);
+    assert.equal(directoryPickerCalls[0].id, "feishu-markdown-assets");
+    assert.equal(directoryPickerCalls[0].mode, "readwrite");
+    assert.equal(directoryPickerCalls[0].startIn, "downloads");
+  }
+
   {
     const { downloadExportPayload, calls, revokedUrls } = loadDownloadHelpersForTest();
 
