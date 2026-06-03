@@ -1429,7 +1429,6 @@ async function pickAssetDownloadDirectory() {
   }
 
   return globalThis.showDirectoryPicker({
-    id: "feishu-markdown-assets",
     mode: "readwrite",
     startIn: "downloads"
   });

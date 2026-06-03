@@ -101,7 +101,7 @@ function createDirectoryHandleForTest() {
 
     assert.equal(result, directoryHandle);
     assert.equal(directoryPickerCalls.length, 1);
-    assert.equal(directoryPickerCalls[0].id, "feishu-markdown-assets");
+    assert.equal(directoryPickerCalls[0].id, undefined);
     assert.equal(directoryPickerCalls[0].mode, "readwrite");
     assert.equal(directoryPickerCalls[0].startIn, "downloads");
   }
