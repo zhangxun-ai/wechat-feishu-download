@@ -223,20 +223,6 @@ async function handleExport(format) {
 
   const shouldDownload = wantsDownload();
   const shouldSaveToObsidian = format === "markdown" && wantsObsidian();
-  let downloadDirectoryHandle = null;
-
-  if (shouldUseDirectoryAssetDownload(format, shouldDownload)) {
-    try {
-      downloadDirectoryHandle = await pickAssetDownloadDirectory();
-    } catch (error) {
-      if (error?.name === "AbortError") {
-        setStatus("已取消导出。", "ready");
-        return;
-      }
-      setStatus(error.message || "选择下载目录失败", "error");
-      return;
-    }
-  }
 
   if (format === "markdown" && wantsObsidian()) {
     const vaultReady = await ensureObsidianReadyIfNeeded();
@@ -263,9 +249,7 @@ async function handleExport(format) {
     let downloadedFilename = "";
 
     if (shouldDownload) {
-      const downloadOutcome = downloadDirectoryHandle
-        ? await writeExportPayloadToDirectory(normalizedPayload, filename, downloadDirectoryHandle)
-        : await downloadExportPayload(normalizedPayload, filename, format);
+      const downloadOutcome = await downloadExportPayload(normalizedPayload, filename, format);
       downloadedFilename = downloadOutcome?.filename || filename;
     }
 
@@ -1413,27 +1397,6 @@ function normalizeWechatMarkdownPayload(payload) {
   };
 }
 
-function shouldUseDirectoryAssetDownload(format, shouldDownload) {
-  return Boolean(
-    format === "markdown"
-    && shouldDownload
-    && includeImagesInput.checked
-    && currentExportType === "feishu"
-    && typeof globalThis.showDirectoryPicker === "function"
-  );
-}
-
-async function pickAssetDownloadDirectory() {
-  if (typeof globalThis.showDirectoryPicker !== "function") {
-    return null;
-  }
-
-  return globalThis.showDirectoryPicker({
-    mode: "readwrite",
-    startIn: "downloads"
-  });
-}
-
 async function downloadExportPayload(payload, filename, format) {
   const assets = Array.isArray(payload?.assets) ? payload.assets.filter(isValidAssetPayload) : [];
   if (assets.length === 0) {
@@ -1441,7 +1404,7 @@ async function downloadExportPayload(payload, filename, format) {
       new Blob([payload.content], { type: payload.mimeType }),
       filename,
       format,
-      true
+      false
     );
   }
 
@@ -1466,49 +1429,6 @@ async function downloadExportPayload(payload, filename, format) {
   return markdownDownload || { filename: markdownPath };
 }
 
-async function writeExportPayloadToDirectory(payload, filename, rootHandle) {
-  const assets = Array.isArray(payload?.assets) ? payload.assets.filter(isValidAssetPayload) : [];
-  if (assets.length === 0) {
-    await writeFileToDirectory(rootHandle, filename, String(payload?.content || ""));
-    return { filename };
-  }
-
-  const folderName = buildAssetBundleFolderName(filename);
-  const markdownPath = `${folderName}/document.md`;
-  await writeFileToDirectory(rootHandle, markdownPath, String(payload?.content || ""));
-
-  for (const asset of assets) {
-    await writeFileToDirectory(
-      rootHandle,
-      `${folderName}/${asset.path}`,
-      base64ToUint8Array(asset.contentBase64)
-    );
-  }
-
-  return { filename: markdownPath };
-}
-
-async function writeFileToDirectory(rootHandle, relativePath, content) {
-  const segments = String(relativePath || "").split("/").map(normalizeDirectoryPathSegment).filter(Boolean);
-  const fileName = segments.pop();
-  if (!fileName) {
-    throw new Error("无效的导出文件路径");
-  }
-
-  let directory = rootHandle;
-  for (const segment of segments) {
-    directory = await directory.getDirectoryHandle(segment, { create: true });
-  }
-
-  const fileHandle = await directory.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  try {
-    await writable.write(content);
-  } finally {
-    await writable.close();
-  }
-}
-
 async function downloadGeneratedBlob(blob, filename, format, saveAs) {
   const url = URL.createObjectURL(blob);
   try {
@@ -1528,15 +1448,6 @@ function buildAssetBundleFolderName(filename) {
     .replace(/[. ]+$/g, "")
     .slice(0, 80)
     || "feishu-export";
-}
-
-function normalizeDirectoryPathSegment(value) {
-  return String(value || "")
-    .replace(/[<>:"\\|?*\u0000-\u001F\u007F-\u009F]/g, "_")
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g, "")
-    .trim()
-    .replace(/[. ]+$/g, "")
-    .slice(0, 120);
 }
 
 function isValidAssetPayload(asset) {

@@ -6,27 +6,17 @@ const vm = require("node:vm");
 function loadDownloadHelpersForTest() {
   const sourcePath = path.join(__dirname, "../popup.js");
   const source = fs.readFileSync(sourcePath, "utf8");
-  const start = source.indexOf("function shouldUseDirectoryAssetDownload");
+  const start = source.indexOf("async function downloadExportPayload");
   const end = source.indexOf("function forceStripWechatNoiseTail");
 
-  assert.ok(start >= 0, "download asset helper block not found");
+  assert.ok(start >= 0, "downloadExportPayload not found");
   assert.ok(end > start, "download helper block not found");
 
   const calls = [];
   const revokedUrls = [];
-  const directoryPickerCalls = [];
-  const directoryHandle = {};
   const sandbox = {
     Blob,
     Uint8Array,
-    includeImagesInput: { checked: true },
-    currentExportType: "feishu",
-    globalThis: {
-      showDirectoryPicker: async (options) => {
-        directoryPickerCalls.push(options);
-        return directoryHandle;
-      }
-    },
     atob: (value) => Buffer.from(value, "base64").toString("binary"),
     setTimeout: (callback) => {
       callback();
@@ -45,67 +35,19 @@ function loadDownloadHelpersForTest() {
   };
 
   vm.runInNewContext(
-    [
-      source.slice(start, end),
-      "this.downloadExportPayload = downloadExportPayload;",
-      "this.writeExportPayloadToDirectory = writeExportPayloadToDirectory;",
-      "this.pickAssetDownloadDirectory = pickAssetDownloadDirectory;"
-    ].join("\n"),
+    `${source.slice(start, end)}\nthis.downloadExportPayload = downloadExportPayload;`,
     sandbox,
     { filename: sourcePath }
   );
 
   return {
     downloadExportPayload: sandbox.downloadExportPayload,
-    writeExportPayloadToDirectory: sandbox.writeExportPayloadToDirectory,
-    pickAssetDownloadDirectory: sandbox.pickAssetDownloadDirectory,
     calls,
-    revokedUrls,
-    directoryPickerCalls,
-    directoryHandle
+    revokedUrls
   };
 }
 
-function createDirectoryHandleForTest() {
-  const writes = [];
-
-  function createDirectory(pathParts) {
-    return {
-      async getDirectoryHandle(name) {
-        return createDirectory([...pathParts, name]);
-      },
-      async getFileHandle(name) {
-        const filePath = [...pathParts, name].join("/");
-        return {
-          async createWritable() {
-            return {
-              async write(content) {
-                writes.push({ path: filePath, content });
-              },
-              async close() {}
-            };
-          }
-        };
-      }
-    };
-  }
-
-  return { handle: createDirectory([]), writes };
-}
-
 (async () => {
-  {
-    const { pickAssetDownloadDirectory, directoryPickerCalls, directoryHandle } = loadDownloadHelpersForTest();
-
-    const result = await pickAssetDownloadDirectory();
-
-    assert.equal(result, directoryHandle);
-    assert.equal(directoryPickerCalls.length, 1);
-    assert.equal(directoryPickerCalls[0].id, undefined);
-    assert.equal(directoryPickerCalls[0].mode, "readwrite");
-    assert.equal(directoryPickerCalls[0].startIn, "downloads");
-  }
-
   {
     const { downloadExportPayload, calls, revokedUrls } = loadDownloadHelpersForTest();
 
@@ -136,36 +78,6 @@ function createDirectoryHandleForTest() {
   }
 
   {
-    const { writeExportPayloadToDirectory, calls } = loadDownloadHelpersForTest();
-    const { handle, writes } = createDirectoryHandleForTest();
-
-    const result = await writeExportPayloadToDirectory(
-      {
-        mimeType: "text/markdown;charset=utf-8",
-        content: "# 文档\n\n![配图](assets/image-001.png)\n",
-        assets: [
-          {
-            path: "assets/image-001.png",
-            mimeType: "image/png",
-            contentBase64: "aW1n"
-          }
-        ]
-      },
-      "Obsidian + Claude cod...我的 AI 知识库拆解.md",
-      handle
-    );
-
-    assert.equal(result.filename, "Obsidian + Claude cod...我的 AI 知识库拆解/document.md");
-    assert.deepEqual(writes.map((item) => item.path), [
-      "Obsidian + Claude cod...我的 AI 知识库拆解/document.md",
-      "Obsidian + Claude cod...我的 AI 知识库拆解/assets/image-001.png"
-    ]);
-    assert.equal(writes[0].content, "# 文档\n\n![配图](assets/image-001.png)\n");
-    assert.deepEqual(Array.from(writes[1].content), [105, 109, 103]);
-    assert.equal(calls.length, 0);
-  }
-
-  {
     const { downloadExportPayload, calls } = loadDownloadHelpersForTest();
 
     const result = await downloadExportPayload(
@@ -179,6 +91,6 @@ function createDirectoryHandleForTest() {
 
     assert.equal(result.filename, "纯文本.md");
     assert.deepEqual(calls.map((call) => call.filename), ["纯文本.md"]);
-    assert.equal(calls[0].saveAs, true);
+    assert.equal(calls[0].saveAs, false);
   }
 })();
