@@ -51,25 +51,30 @@ function loadExporterForTest(fetchImpl) {
   return sandbox.module.exports.__test;
 }
 
-function buildClientVarsWithImage() {
-  return {
-    data: {
-      block_map: {
-        docToken: {
-          data: {
-            children: ["imageBlock"]
-          }
-        },
-        imageBlock: {
-          data: {
-            type: "image",
-            image: {
-              token: "imageToken",
-              name: "配图"
-            }
-          }
+function buildClientVarsWithImage(count = 1) {
+  const blockMap = {
+    docToken: {
+      data: {
+        children: Array.from({ length: count }, (_, index) => `imageBlock${index + 1}`)
+      }
+    }
+  };
+
+  for (let index = 1; index <= count; index += 1) {
+    blockMap[`imageBlock${index}`] = {
+      data: {
+        type: "image",
+        image: {
+          token: `imageToken${index}`,
+          name: count === 1 ? "配图" : `配图${index}`
         }
       }
+    };
+  }
+
+  return {
+    data: {
+      block_map: blockMap
     }
   };
 }
@@ -121,4 +126,67 @@ async function assertSettlesWithin(promise, timeoutMs) {
       contentBase64: "aW1hZ2UtYnl0ZXM="
     }
   ]);
+
+  {
+    let linkedFetchCalls = 0;
+    const linkedExporter = loadExporterForTest(async () => {
+      linkedFetchCalls += 1;
+      return new Promise(() => {});
+    });
+
+    const linkedMarkdown = await assertSettlesWithin(
+      linkedExporter.convertClientVarsToMarkdown(
+        {
+          exportToken: "docToken",
+          pageTitle: "测试文档",
+          title: "测试文档"
+        },
+        buildClientVarsWithImage(3),
+        {
+          includeImages: true,
+          localImageAssets: false,
+          assets: []
+        }
+      ),
+      20
+    );
+
+    assert.equal(linkedFetchCalls, 0);
+    assert.match(linkedMarkdown, /!\[配图1]\(https:\/\/internal-api-drive-stream\.feishu\.cn/);
+    assert.match(linkedMarkdown, /!\[配图2]\(https:\/\/internal-api-drive-stream\.feishu\.cn/);
+    assert.match(linkedMarkdown, /!\[配图3]\(https:\/\/internal-api-drive-stream\.feishu\.cn/);
+  }
+
+  {
+    let hangingFetchCalls = 0;
+    const hangingExporter = loadExporterForTest(async () => {
+      hangingFetchCalls += 1;
+      return new Promise(() => {});
+    });
+    const hangingAssets = [];
+
+    const timedOutMarkdown = await assertSettlesWithin(
+      hangingExporter.convertClientVarsToMarkdown(
+        {
+          exportToken: "docToken",
+          pageTitle: "测试文档",
+          title: "测试文档"
+        },
+        buildClientVarsWithImage(3),
+        {
+          includeImages: true,
+          localImageAssets: true,
+          imageFetchTimeoutMs: 20,
+          assets: hangingAssets
+        }
+      ),
+      45
+    );
+
+    assert.equal(hangingFetchCalls, 3);
+    assert.deepEqual(hangingAssets, []);
+    assert.match(timedOutMarkdown, /!\[配图1]\(https:\/\/internal-api-drive-stream\.feishu\.cn/);
+    assert.match(timedOutMarkdown, /!\[配图2]\(https:\/\/internal-api-drive-stream\.feishu\.cn/);
+    assert.match(timedOutMarkdown, /!\[配图3]\(https:\/\/internal-api-drive-stream\.feishu\.cn/);
+  }
 })();

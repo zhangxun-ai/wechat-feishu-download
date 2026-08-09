@@ -1,6 +1,7 @@
 const BACKGROUND_TAB_SETTLE_DELAY_MS = 1500;
 const DEFAULT_HISTORY_RANGE_DAYS = 30;
-const DOWNLOAD_STATUS_TIMEOUT_MS = 5 * 60 * 1000;
+const DOWNLOAD_STATUS_TIMEOUT_MS = 60 * 1000;
+const SCYS_EMBEDDED_FRAME_TIMEOUT_MS = 15 * 1000;
 const WECHAT_MP_LOGIN_URL = "https://mp.weixin.qq.com/";
 const exportUrlUtils = globalThis.ExportUrlUtils || {};
 const exportUiModels = globalThis.ExportUiModels || {};
@@ -12,6 +13,8 @@ const isBatchExportUrl = (url) => exportUrlUtils.isBatchExportUrl?.(url) || fals
 const isWechatArticleUrl = (url) => exportUrlUtils.isWechatArticleUrl?.(url) || false;
 const isWechatMpBackendUrl = (url) => exportUrlUtils.isWechatMpBackendUrl?.(url) || false;
 const isScysCourseUrl = (url) => exportUrlUtils.isScysCourseUrl?.(url) || false;
+const isScysEmbeddedCourseUrl = (url) => exportUrlUtils.isScysEmbeddedCourseUrl?.(url) || false;
+const selectScysCourseFrameTarget = (frames, url) => exportUrlUtils.selectScysCourseFrameTarget?.(frames, url) || null;
 const isScysPageUrl = (url) => {
   try {
     return new URL(url).hostname === "scys.com";
@@ -112,6 +115,8 @@ let activeCategory = "other";
 let actionButtonsLocked = false;
 let courseExportVisible = false;
 let courseExportEnabled = false;
+let activeExportTask = null;
+let activeContentFrameId = null;
 let primaryActionModel = {
   headline: "当前页",
   summary: "正在识别当前页面…",
@@ -185,7 +190,8 @@ async function init() {
     setButtonsDisabled(true);
   } else {
     try {
-      pageInfo = await sendMessageWithRecovery(activeTabId, { type: "feishu-export:get-page-info" });
+      activeContentFrameId = await resolveContentFrameId(activeTabId, tab.url || "");
+      pageInfo = await sendMessageToActivePage({ type: "feishu-export:get-page-info" });
       setPageMeta(pageInfo);
 
       if (!pageInfo?.supports || !pageInfo.supports.includes("markdown")) {
@@ -223,6 +229,7 @@ async function handleExport(format) {
 
   const shouldDownload = wantsDownload();
   const shouldSaveToObsidian = format === "markdown" && wantsObsidian();
+  const shouldDownloadSelfContainedMarkdown = shouldDownload && !shouldSaveToObsidian && format === "markdown";
 
   if (format === "markdown" && wantsObsidian()) {
     const vaultReady = await ensureObsidianReadyIfNeeded();
@@ -233,24 +240,43 @@ async function handleExport(format) {
 
   setButtonsDisabled(true);
   setStatus(`正在导出 ${format.toUpperCase()}…`, "loading");
+  activeExportTask = createExportTask();
 
   try {
-    const payload = await sendMessageWithRecovery(activeTabId, {
+    const payload = await sendMessageToActivePage({
       type: "feishu-export:export-document",
       format,
       options: {
         includeImages: includeImagesInput.checked,
-        localImageAssets: true
+        localImageAssets: (shouldDownloadSelfContainedMarkdown || shouldSaveToObsidian) && includeImagesInput.checked
       }
     });
+    throwIfExportCanceled();
     const normalizedPayload = normalizeWechatMarkdownPayload(payload);
 
     const filename = normalizeDownloadFilename(normalizedPayload.filename, format);
     let downloadedFilename = "";
+    let downloadStarted = false;
 
     if (shouldDownload) {
-      const downloadOutcome = await downloadExportPayload(normalizedPayload, filename, format);
-      downloadedFilename = downloadOutcome?.filename || filename;
+      if (shouldDownloadSelfContainedMarkdown) {
+        setStatus(
+          includeImagesInput.checked
+            ? `正在生成带图 Markdown：${filename}。`
+            : `正在生成小体积 Markdown：${filename}。`,
+          "loading"
+        );
+        const downloadOutcome = await downloadSelfContainedMarkdownPayload(normalizedPayload, filename);
+        throwIfExportCanceled();
+        downloadedFilename = downloadOutcome?.filename || filename;
+        downloadStarted = downloadOutcome?.started === true;
+      } else {
+        setStatus(`正在写入下载文件：${filename}，可点击“停止导出”取消。`, "loading");
+        const downloadOutcome = await downloadExportPayload(normalizedPayload, filename, format);
+        throwIfExportCanceled();
+        downloadedFilename = downloadOutcome?.filename || filename;
+        downloadStarted = downloadOutcome?.started === true;
+      }
     }
 
     let obsidianMessage = "";
@@ -267,15 +293,21 @@ async function handleExport(format) {
     setStatus(buildExportCompletionStatus({
       format,
       downloadedFilename,
+      downloadStarted,
       savedToObsidian: Boolean(obsidianMessage) || (shouldSaveToObsidian && !shouldDownload)
     }), "ready");
   } catch (error) {
-    if (format === "markdown" && error.message === "不支持的导出格式") {
+    if (activeExportTask?.canceled) {
+      setStatus("已停止导出。", "error");
+    } else if (error?.name === "AbortError") {
+      setStatus("已取消保存。", "error");
+    } else if (format === "markdown" && error.message === "不支持的导出格式") {
       setStatus("当前页面还在运行旧版脚本，请刷新页面后再试。", "error");
     } else {
       setStatus(error.message || "导出失败", "error");
     }
   } finally {
+    activeExportTask = null;
     setButtonsDisabled(false);
   }
 }
@@ -337,7 +369,7 @@ async function handleCourseExport() {
   setStatus("正在识别当前专栏目录…", "loading");
 
   try {
-    const outline = await sendMessageWithRecovery(activeTabId, {
+    const outline = await sendMessageToActivePage({
       type: "feishu-export:get-scys-course-outline"
     });
     const job = await createStoredCourseExportJob(outline, {
@@ -513,9 +545,17 @@ async function checkWechatMpLoginFromSeed(seedUrl) {
   }
 }
 
-function sendMessageToTab(tabId, message) {
+function sendMessageToActivePage(message) {
+  return sendMessageWithRecovery({
+    tabId: activeTabId,
+    message,
+    frameId: activeContentFrameId
+  });
+}
+
+function sendMessageToTab(tabId, message, frameId = null) {
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
+    const callback = (response) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -532,35 +572,46 @@ function sendMessageToTab(tabId, message) {
       }
 
       resolve(response.data);
-    });
+    };
+
+    if (Number.isInteger(frameId)) {
+      chrome.tabs.sendMessage(tabId, message, { frameId }, callback);
+      return;
+    }
+
+    chrome.tabs.sendMessage(tabId, message, callback);
   });
 }
 
 async function sendMessageWithRecovery(arg1, arg2) {
   const tabId = typeof arg1 === "number" ? arg1 : arg1?.tabId;
   const message = typeof arg1 === "number" ? arg2 : arg1?.message;
+  const frameId = typeof arg1 === "number" ? null : arg1?.frameId;
 
   if (!tabId || !message) {
     throw new Error("消息发送参数不完整");
   }
 
   try {
-    return await sendMessageToTab(tabId, message);
+    return await sendMessageToTab(tabId, message, frameId);
   } catch (error) {
     if (!isMissingReceiverError(error)) {
       throw error;
     }
 
-    await injectContentScript(tabId);
-    return sendMessageToTab(tabId, message);
+    await injectContentScript(tabId, frameId);
+    return sendMessageToTab(tabId, message, frameId);
   }
 }
 
-function injectContentScript(tabId) {
+function injectContentScript(tabId, frameId = null) {
   return new Promise((resolve, reject) => {
+    const target = Number.isInteger(frameId)
+      ? { tabId, frameIds: [frameId] }
+      : { tabId };
     chrome.scripting.executeScript(
       {
-        target: { tabId },
+        target,
         files: ["shared/scys-course-utils.js", "shared/web-markdown-utils.js", "content-scripts/feishu-exporter.js"]
       },
       () => {
@@ -570,6 +621,46 @@ function injectContentScript(tabId) {
         }
 
         resolve();
+      }
+    );
+  });
+}
+
+async function resolveContentFrameId(tabId, sourceUrl, timeoutMs = SCYS_EMBEDDED_FRAME_TIMEOUT_MS) {
+  if (!isScysEmbeddedCourseUrl(sourceUrl)) {
+    return null;
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= timeoutMs) {
+    const frameResults = await inspectFrameUrls(tabId);
+    const target = selectScysCourseFrameTarget(frameResults, sourceUrl);
+    if (target) {
+      return target.frameId;
+    }
+
+    if (Date.now() - startedAt >= timeoutMs) {
+      break;
+    }
+    await sleep(250);
+  }
+
+  throw new Error("未找到航海手册正文。请等待正文加载完成后刷新页面，再重新打开插件。");
+}
+
+function inspectFrameUrls(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript(
+      {
+        target: { tabId, allFrames: true },
+        func: () => location.href
+      },
+      (results) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(results || []);
       }
     );
   });
@@ -684,6 +775,7 @@ function startDownload(options) {
         return;
       }
 
+      activeExportTask?.downloadIds.add(downloadId);
       resolve(downloadId);
     });
   });
@@ -702,7 +794,10 @@ function waitForDownloadCompletion(downloadId, fallbackFilename) {
   return new Promise((resolve, reject) => {
     let finished = false;
     const timer = setTimeout(() => {
-      finish(() => reject(new Error("下载状态确认超时，请在浏览器下载列表查看结果。")));
+      finish(async () => {
+        await cancelDownload(downloadId).catch(() => null);
+        reject(new Error("下载超时，已取消这次下载。请重新加载扩展和页面后再试。"));
+      });
     }, DOWNLOAD_STATUS_TIMEOUT_MS);
 
     const listener = (delta) => {
@@ -757,6 +852,23 @@ function getDownloadItem(downloadId) {
         return;
       }
       resolve(Array.isArray(items) ? items[0] || null : null);
+    });
+  });
+}
+
+function cancelDownload(downloadId) {
+  return new Promise((resolve, reject) => {
+    if (!downloadId || !chrome.downloads?.cancel) {
+      resolve();
+      return;
+    }
+
+    chrome.downloads.cancel(downloadId, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
     });
   });
 }
@@ -816,6 +928,30 @@ function setButtonsDisabled(disabled) {
   actionButtonsLocked = disabled;
   renderPrimarySurface();
   renderCategoryWorkspace();
+}
+
+function createExportTask() {
+  return {
+    canceled: false,
+    downloadIds: new Set()
+  };
+}
+
+function throwIfExportCanceled() {
+  if (activeExportTask?.canceled) {
+    throw new Error("已停止导出。");
+  }
+}
+
+async function cancelActiveExport() {
+  if (!activeExportTask) {
+    return;
+  }
+
+  activeExportTask.canceled = true;
+  const downloadIds = Array.from(activeExportTask.downloadIds);
+  await Promise.all(downloadIds.map((downloadId) => cancelDownload(downloadId).catch(() => null)));
+  setStatus("已停止导出。", "error");
 }
 
 function setCourseExportAvailability(visible, enabled) {
@@ -941,9 +1077,15 @@ function renderPrimarySurface() {
   if (primaryActionButton) {
     const action = primaryActionModel.primaryAction;
     primaryActionButton.hidden = !action;
-    primaryActionButton.disabled = actionButtonsLocked || !action || (action.key === "export-course" && !courseExportEnabled);
-    primaryActionButton.textContent = action?.label || "当前页暂不支持";
-    primaryActionButton.dataset.actionKey = action?.key || "";
+    if (actionButtonsLocked && action) {
+      primaryActionButton.disabled = false;
+      primaryActionButton.textContent = "停止导出";
+      primaryActionButton.dataset.actionKey = "cancel-export";
+    } else {
+      primaryActionButton.disabled = !action || (action.key === "export-course" && !courseExportEnabled);
+      primaryActionButton.textContent = action?.label || "当前页暂不支持";
+      primaryActionButton.dataset.actionKey = action?.key || "";
+    }
   }
   if (secondaryActionButton) {
     const action = primaryActionModel.secondaryAction;
@@ -1013,11 +1155,11 @@ async function handlePresetSelection(presetKey) {
   switch (presetKey) {
     case "quick-export":
       nextTarget = "download";
-      nextIncludeImages = true;
+      nextIncludeImages = false;
       break;
     case "ai-ready":
       nextTarget = "download";
-      nextIncludeImages = false;
+      nextIncludeImages = true;
       break;
     case "obsidian":
       nextTarget = "obsidian";
@@ -1169,6 +1311,9 @@ async function handleSecondaryAction() {
 
 async function handleActionByKey(actionKey) {
   switch (actionKey) {
+    case "cancel-export":
+      await cancelActiveExport();
+      break;
     case "export-markdown":
       await handleExport("markdown");
       break;
@@ -1400,8 +1545,9 @@ function normalizeWechatMarkdownPayload(payload) {
 async function downloadExportPayload(payload, filename, format) {
   const assets = Array.isArray(payload?.assets) ? payload.assets.filter(isValidAssetPayload) : [];
   if (assets.length === 0) {
-    return downloadGeneratedBlob(
-      new Blob([payload.content], { type: payload.mimeType }),
+    return downloadGeneratedText(
+      payload.content,
+      payload.mimeType,
       filename,
       format,
       false
@@ -1429,6 +1575,16 @@ async function downloadExportPayload(payload, filename, format) {
   return markdownDownload || { filename: markdownPath };
 }
 
+async function downloadSelfContainedMarkdownPayload(payload, markdownFilename) {
+  const assets = Array.isArray(payload?.assets) ? payload.assets.filter(isValidAssetPayload) : [];
+  const markdown = embedAssetsAsDataUris(payload?.content || "", assets);
+  return downloadGeneratedText(markdown, payload?.mimeType, markdownFilename, "markdown", false);
+}
+
+async function downloadGeneratedText(content, mimeType, filename, format, saveAs) {
+  return downloadTextWithAnchor(content, mimeType, filename, format);
+}
+
 async function downloadGeneratedBlob(blob, filename, format, saveAs) {
   const url = URL.createObjectURL(blob);
   try {
@@ -1436,6 +1592,29 @@ async function downloadGeneratedBlob(blob, filename, format, saveAs) {
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+}
+
+function downloadTextWithAnchor(content, mimeType, filename, format) {
+  const safeFilename = String(filename || buildFallbackFilename(format));
+  const blob = new Blob([String(content || "")], { type: mimeType || "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = safeFilename;
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+  }
+
+  return Promise.resolve({
+    filename: safeFilename,
+    started: true
+  });
 }
 
 function buildAssetBundleFolderName(filename) {
@@ -1467,6 +1646,15 @@ function base64ToUint8Array(value) {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function embedAssetsAsDataUris(markdown, assets) {
+  let result = String(markdown || "");
+  for (const asset of assets) {
+    const dataUri = `data:${asset.mimeType || "application/octet-stream"};base64,${asset.contentBase64}`;
+    result = result.split(`(${asset.path})`).join(`(${dataUri})`);
+  }
+  return result;
 }
 
 function forceStripWechatNoiseTail(value) {

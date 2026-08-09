@@ -13,6 +13,8 @@ function loadDownloadHelpersForTest() {
   assert.ok(end > start, "download helper block not found");
 
   const calls = [];
+  const anchorDownloads = [];
+  const objectUrls = new Map();
   const revokedUrls = [];
   const sandbox = {
     Blob,
@@ -24,9 +26,29 @@ function loadDownloadHelpersForTest() {
     URL: {
       createObjectURL: (() => {
         let nextId = 1;
-        return () => `blob:test-${nextId++}`;
+        return (value) => {
+          const url = `blob:test-${nextId++}`;
+          objectUrls.set(url, value);
+          return url;
+        };
       })(),
       revokeObjectURL: (url) => revokedUrls.push(url)
+    },
+    document: {
+      body: {
+        appendChild: () => {}
+      },
+      createElement: () => {
+        const link = {
+          href: "",
+          download: "",
+          rel: "",
+          style: {},
+          click: () => anchorDownloads.push({ href: link.href, download: link.download }),
+          remove: () => {}
+        };
+        return link;
+      }
     },
     downloadWithFallback: async (url, filename, format, saveAs) => {
       calls.push({ url, filename, format, saveAs });
@@ -35,23 +57,26 @@ function loadDownloadHelpersForTest() {
   };
 
   vm.runInNewContext(
-    `${source.slice(start, end)}\nthis.downloadExportPayload = downloadExportPayload;`,
+    `${source.slice(start, end)}\nthis.downloadExportPayload = downloadExportPayload;\nthis.downloadSelfContainedMarkdownPayload = downloadSelfContainedMarkdownPayload;`,
     sandbox,
     { filename: sourcePath }
   );
 
   return {
     downloadExportPayload: sandbox.downloadExportPayload,
+    downloadSelfContainedMarkdownPayload: sandbox.downloadSelfContainedMarkdownPayload,
     calls,
+    anchorDownloads,
+    objectUrls,
     revokedUrls
   };
 }
 
 (async () => {
   {
-    const { downloadExportPayload, calls, revokedUrls } = loadDownloadHelpersForTest();
+    const { downloadSelfContainedMarkdownPayload, calls, anchorDownloads, objectUrls, revokedUrls } = loadDownloadHelpersForTest();
 
-    const result = await downloadExportPayload(
+    const result = await downloadSelfContainedMarkdownPayload(
       {
         mimeType: "text/markdown;charset=utf-8",
         content: "# 文档\n\n![配图](assets/image-001.png)\n",
@@ -64,21 +89,23 @@ function loadDownloadHelpersForTest() {
         ]
       },
       "Obsidian + Claude cod...我的 AI 知识库拆解.md",
-      "markdown"
     );
 
-    assert.equal(result.filename, "Obsidian + Claude cod...我的 AI 知识库拆解/document.md");
-    assert.deepEqual(calls.map((call) => call.filename), [
-      "Obsidian + Claude cod...我的 AI 知识库拆解/document.md",
-      "Obsidian + Claude cod...我的 AI 知识库拆解/assets/image-001.png"
+    assert.equal(result.filename, "Obsidian + Claude cod...我的 AI 知识库拆解.md");
+    assert.equal(result.started, true);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(anchorDownloads, [
+      { href: "blob:test-1", download: "Obsidian + Claude cod...我的 AI 知识库拆解.md" }
     ]);
-    assert.equal(calls.every((call) => call.saveAs === false), true);
-    assert.equal(calls.some((call) => call.filename.endsWith(".zip")), false);
-    assert.deepEqual(revokedUrls, ["blob:test-1", "blob:test-2"]);
+    const markdownText = await objectUrls.get("blob:test-1").text();
+    assert.match(markdownText, /# 文档/);
+    assert.match(markdownText, /!\[配图]\(data:image\/png;base64,aW1n\)/);
+    assert.doesNotMatch(markdownText, /assets\/image-001\.png/);
+    assert.deepEqual(revokedUrls, ["blob:test-1"]);
   }
 
   {
-    const { downloadExportPayload, calls } = loadDownloadHelpersForTest();
+    const { downloadExportPayload, calls, anchorDownloads, revokedUrls } = loadDownloadHelpersForTest();
 
     const result = await downloadExportPayload(
       {
@@ -90,7 +117,10 @@ function loadDownloadHelpersForTest() {
     );
 
     assert.equal(result.filename, "纯文本.md");
-    assert.deepEqual(calls.map((call) => call.filename), ["纯文本.md"]);
-    assert.equal(calls[0].saveAs, false);
+    assert.equal(result.started, true);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(anchorDownloads, [{ href: "blob:test-1", download: "纯文本.md" }]);
+    assert.deepEqual(revokedUrls, ["blob:test-1"]);
   }
+
 })();

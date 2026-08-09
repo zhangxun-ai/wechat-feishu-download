@@ -71,11 +71,11 @@
             <div id="presetBar" class="preset-bar" aria-label="导出预设">
               <button class="preset-card" type="button" data-preset="quick-export">
                 <span class="preset-title">快速导出</span>
-                <span class="preset-desc">下载 + 带图，适合留档</span>
+                <span class="preset-desc">小体积 Markdown，适合 AI</span>
               </button>
               <button class="preset-card" type="button" data-preset="ai-ready">
-                <span class="preset-title">发给 AI</span>
-                <span class="preset-desc">Markdown 无图，速度更快</span>
+                <span class="preset-title">带图留档</span>
+                <span class="preset-desc">嵌入图片，文件会变大</span>
               </button>
               <button class="preset-card" type="button" data-preset="obsidian">
                 <span class="preset-title">存到 Obsidian</span>
@@ -105,10 +105,10 @@
                 </div>
 
                 <label class="toggle toggle-quick" for="includeImages">
-                  <input id="includeImages" type="checkbox" checked>
+                  <input id="includeImages" type="checkbox">
                   <span class="toggle-copy">
                     <span class="toggle-title">保留图片</span>
-                    <span class="toggle-desc">关闭后只导出正文文字，速度更快，也更适合做 AI 分析。</span>
+                    <span class="toggle-desc">开启后会把图片嵌入 Markdown，文件会明显变大。</span>
                   </span>
                 </label>
 

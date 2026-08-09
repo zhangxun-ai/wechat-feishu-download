@@ -39,7 +39,7 @@ async function main() {
     );
     assert.deepEqual(
       getPopupPresets().map((item) => item.label),
-      ["快速导出", "发给 AI", "存到 Obsidian"]
+      ["快速导出", "带图留档", "存到 Obsidian"]
     );
   });
 
@@ -129,6 +129,15 @@ async function main() {
       buildExportCompletionStatus({
         format: "markdown",
         downloadedFilename: "一次性解决出海网络问题.md",
+        downloadStarted: true,
+        savedToObsidian: false
+      }),
+      "MARKDOWN 已生成并交给浏览器下载：一次性解决出海网络问题.md。"
+    );
+    assert.equal(
+      buildExportCompletionStatus({
+        format: "markdown",
+        downloadedFilename: "一次性解决出海网络问题.md",
         savedToObsidian: false
       }),
       "MARKDOWN 下载完成：一次性解决出海网络问题.md。"
@@ -145,12 +154,12 @@ async function main() {
 
   await test("resolves popup preset state from output target and image choice", async () => {
     assert.deepEqual(
-      resolvePopupPresetState({ outputTarget: "download", includeImages: true }),
+      resolvePopupPresetState({ outputTarget: "download", includeImages: false }),
       { key: "quick-export", label: "快速导出" }
     );
     assert.deepEqual(
-      resolvePopupPresetState({ outputTarget: "download", includeImages: false }),
-      { key: "ai-ready", label: "发给 AI" }
+      resolvePopupPresetState({ outputTarget: "download", includeImages: true }),
+      { key: "ai-ready", label: "带图留档" }
     );
     assert.deepEqual(
       resolvePopupPresetState({ outputTarget: "obsidian", includeImages: true }),

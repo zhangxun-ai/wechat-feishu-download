@@ -23,6 +23,7 @@
   const WECHAT_MP_HISTORY_SCAN_LIMIT = 500;
   const WECHAT_MP_PAGE_DELAY_MS = 250;
   const FEISHU_API_TIMEOUT_MS = 30000;
+  const FEISHU_IMAGE_FETCH_TIMEOUT_MS = 5000;
   const TYPE_MAP = {
     22: "docx",
     2: "docs",
@@ -2348,19 +2349,30 @@
     const imageBlocks = Object.entries(blockMap).filter(([, block]) => block?.data?.type === "image");
     const assets = Array.isArray(options.assets) ? options.assets : [];
     const assetFolder = buildAssetFolderName(meta.title);
-    let assetIndex = assets.length + 1;
+    const fetches = [];
 
-    for (const [blockId, block] of imageBlocks) {
+    for (const [index, [blockId, block]] of imageBlocks.entries()) {
       const src = imageMap.get(blockId) || buildImageUrl(blockId, block);
       if (!src) {
         continue;
       }
 
-      const asset = await fetchImageAsAsset(src, block, assetFolder, assetIndex, options.imageFetchTimeoutMs);
+      fetches.push({
+        blockId,
+        src,
+        promise: fetchImageAsAsset(src, block, assetFolder, assets.length + index + 1, options.imageFetchTimeoutMs)
+      });
+    }
+
+    const results = await Promise.all(fetches.map(async (entry) => ({
+      ...entry,
+      asset: await entry.promise
+    })));
+
+    for (const { blockId, src, asset } of results) {
       if (asset) {
         assets.push(asset);
         linkedMap.set(blockId, asset.path);
-        assetIndex += 1;
       } else {
         linkedMap.set(blockId, src);
       }
@@ -3050,7 +3062,7 @@
     return String(value || "").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
   }
 
-  async function fetchImageAsAsset(src, block, assetFolder, assetIndex, timeoutMs = FEISHU_API_TIMEOUT_MS) {
+  async function fetchImageAsAsset(src, block, assetFolder, assetIndex, timeoutMs = FEISHU_IMAGE_FETCH_TIMEOUT_MS) {
     try {
       const response = await fetchWithTimeout(src, { credentials: "include" }, timeoutMs);
       if (!response.ok) {

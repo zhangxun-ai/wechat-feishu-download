@@ -10,6 +10,16 @@
 
 项目定位是 **可用的 MVP**：优先保证成功率、可读性和使用门槛，不追求 100% 样式还原。
 
+## 当前开发血缘
+
+- `2026-08-09`：完善本地导出稳定性与航海手册支持
+  - 支持从 `scys.com/activity/.../course/...?...chapterId=...` 活动页自动定位航海手册 iframe
+  - 使用 `courseId + chapterId` 精确路由课程检测、当前章导出和整专栏导出
+  - 生财 iframe 延迟加载时最多等待 15 秒，不再错误回退为普通网页正文
+  - 飞书多图片并行获取，并为单张图片设置独立超时
+  - 普通下载改为浏览器原生单文件 Markdown；带图留档使用内嵌图片
+  - 更新快速导出、带图留档和停止导出的交互反馈
+
 ## 功能概览
 
 ### 1. 单篇导出
@@ -66,7 +76,8 @@
 
 输入：
 
-- 当前已打开的生财课程章节页，例如 `https://scys.com/deepsea/.../course/...?...chapterId=...`
+- 当前已打开的生财航海活动课程页，例如 `https://scys.com/activity/.../course/...?...chapterId=...`
+- 也兼容 `https://scys.com/deepsea/.../course/...?...chapterId=...` 和 `https://scys.com/course/detail/...?...chapterId=...`
 
 能力：
 
@@ -133,7 +144,8 @@
 
 说明：
 
-- 当前只针对 `scys.com/deepsea/.../course/...?...chapterId=...` 页面启用
+- 航海活动页会自动定位并注入内层课程 iframe，无需手工打开 `/course/detail/...` 地址
+- 支持 `scys.com/activity/.../course/...`、`scys.com/deepsea/.../course/...` 和 `scys.com/course/detail/...` 章节页
 - 旧的单篇导出和手工批量下载逻辑不变
 - 如果某些章节失败，最终文件仍会生成，并附带失败章节列表
 

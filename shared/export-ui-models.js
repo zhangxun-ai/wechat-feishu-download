@@ -9,12 +9,12 @@
     {
       key: "quick-export",
       label: "快速导出",
-      description: "下载并保留图片，适合留档"
+      description: "小体积 Markdown，适合 AI"
     },
     {
       key: "ai-ready",
-      label: "发给 AI",
-      description: "Markdown 无图，适合分析"
+      label: "带图留档",
+      description: "嵌入图片，文件会变大"
     },
     {
       key: "obsidian",
@@ -85,11 +85,11 @@
     }
 
     if (outputTarget === "download" && includeImages === false) {
-      return { key: "ai-ready", label: "发给 AI" };
+      return { key: "quick-export", label: "快速导出" };
     }
 
     if (outputTarget === "download") {
-      return { key: "quick-export", label: "快速导出" };
+      return { key: "ai-ready", label: "带图留档" };
     }
 
     return { key: "custom", label: "自定义组合" };
@@ -98,7 +98,16 @@
   function buildExportCompletionStatus(input = {}) {
     const format = String(input.format || "markdown").toUpperCase();
     const downloadedFilename = String(input.downloadedFilename || "").trim();
+    const downloadStarted = input.downloadStarted === true;
     const savedToObsidian = input.savedToObsidian === true;
+
+    if (downloadedFilename && downloadStarted && savedToObsidian) {
+      return `${format} 已生成并交给浏览器下载：${downloadedFilename}，并已写入 Obsidian。`;
+    }
+
+    if (downloadedFilename && downloadStarted) {
+      return `${format} 已生成并交给浏览器下载：${downloadedFilename}。`;
+    }
 
     if (downloadedFilename && savedToObsidian) {
       return `${format} 下载完成：${downloadedFilename}，并已写入 Obsidian。`;
