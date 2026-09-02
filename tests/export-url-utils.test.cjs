@@ -31,6 +31,18 @@ test("classifies ordinary https pages as generic web exports", () => {
   assert.equal(isSingleExportUrl("https://example.com/blog/post"), true);
 });
 
+test("routes native Google Docs pages to the dedicated exporter", () => {
+  assert.equal(
+    classifyExportUrl("https://docs.google.com/document/d/10RFLy_d8oXwWGI9DcW-Reg01INZb6Q-3ts08K3r9Lh8/edit?tab=t.0"),
+    "google-docs"
+  );
+  assert.equal(
+    isSingleExportUrl("https://docs.google.com/document/d/10RFLy_d8oXwWGI9DcW-Reg01INZb6Q-3ts08K3r9Lh8/edit?tab=t.0"),
+    true
+  );
+  assert.equal(classifyExportUrl("https://docs.google.com/document/create"), "generic-web");
+});
+
 test("keeps batch scope restricted to current dedicated domains", () => {
   assert.equal(isBatchExportUrl("https://scys.com/articleDetail/xq_topic/45811224845518518"), false);
   assert.equal(isBatchExportUrl("https://mp.weixin.qq.com/s/abc123"), true);

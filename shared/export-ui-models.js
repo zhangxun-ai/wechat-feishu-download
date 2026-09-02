@@ -193,6 +193,18 @@
       };
     }
 
+    if (input.exportType === "google-docs") {
+      return {
+        headline: "当前页已就绪",
+        summary: "当前页面支持 Google 文档正文导出，内容将从文档原生导出结果读取。",
+        primaryAction: {
+          key: "export-markdown",
+          label: "导出当前 Google 文档"
+        },
+        secondaryAction: null
+      };
+    }
+
     if (detectedCategory === "other") {
       return {
         headline: "当前页已就绪",

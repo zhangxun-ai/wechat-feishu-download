@@ -24,6 +24,8 @@
   const WECHAT_MP_PAGE_DELAY_MS = 250;
   const FEISHU_API_TIMEOUT_MS = 30000;
   const FEISHU_IMAGE_FETCH_TIMEOUT_MS = 5000;
+  const GOOGLE_DOCS_EXPORT_TIMEOUT_MS = 120000;
+  let googleDocsTrustedHtmlPolicy = null;
   const TYPE_MAP = {
     22: "docx",
     2: "docs",
@@ -254,6 +256,16 @@
       };
     }
 
+    if (isGoogleDocsPage()) {
+      const meta = getGoogleDocsMeta();
+
+      return {
+        title: meta.title,
+        docType: meta.pageType,
+        supports: ["markdown", "json"]
+      };
+    }
+
     if (isScysCoursePage()) {
       const meta = getScysCourseChapterMeta();
 
@@ -288,6 +300,10 @@
 
     if (isWechatArticlePage()) {
       return exportWechatDocument(format, options);
+    }
+
+    if (isGoogleDocsPage()) {
+      return exportGoogleDocsDocument(format, options);
     }
 
     if (isScysCoursePage()) {
@@ -525,8 +541,17 @@
     return location.hostname === "mp.weixin.qq.com" && /^\/cgi-bin\//.test(location.pathname);
   }
 
+  function isGoogleDocsPage() {
+    return location.hostname === "docs.google.com"
+      && /^\/document\/d\/[^/]+(?:\/|$)/.test(location.pathname);
+  }
+
   function isGenericWebPage() {
-    return /^https?:$/.test(location.protocol) && !isFeishuPage() && !isWechatArticlePage() && !isWechatMpBackendPage();
+    return /^https?:$/.test(location.protocol)
+      && !isFeishuPage()
+      && !isWechatArticlePage()
+      && !isWechatMpBackendPage()
+      && !isGoogleDocsPage();
   }
 
   function isScysCoursePage() {
@@ -927,6 +952,274 @@
   function isExpectedScysChapterText(text, title) {
     const expected = cleanupInline(title);
     return !expected || text.includes(expected);
+  }
+
+  async function exportGoogleDocsDocument(format, options) {
+    const meta = getGoogleDocsMeta();
+    const exportUrl = buildGoogleDocsExportUrl(location.href);
+    const exportedHtml = await fetchGoogleDocsExportHtml(exportUrl);
+    let exportedDocument;
+    try {
+      exportedDocument = parseGoogleDocsExportHtml(exportedHtml);
+    } catch (error) {
+      return exportGoogleDocsPlainTextDocument(format, meta, error);
+    }
+
+    const liveRoot = exportedDocument.querySelector("body.doc-content, .doc-content") || exportedDocument.body;
+
+    if (!liveRoot || !cleanupInline(liveRoot.textContent || "")) {
+      return exportGoogleDocsPlainTextDocument(
+        format,
+        meta,
+        new Error("Google 文档 HTML 导出结果没有正文")
+      );
+    }
+
+    try {
+      const rawHtml = liveRoot.innerHTML || "";
+      const clonedRoot = liveRoot.cloneNode(true);
+      normalizeGoogleDocsExportRoot(clonedRoot);
+      sanitizeGenericArticle(clonedRoot, { includeImages: options.includeImages !== false });
+      let markdownBody = cleanupMarkdown(
+        Array.from(clonedRoot.childNodes)
+          .map((child) => convertBlock(child, 0))
+          .filter(Boolean)
+          .join("\n\n")
+      );
+
+      if (options.includeImages === false) {
+        markdownBody = stripMarkdownImages(markdownBody);
+      }
+
+      if (!markdownBody) {
+        throw new Error("未提取到 Google 文档正文");
+      }
+
+      if (format === "markdown") {
+        return {
+          filename: buildFilename(meta.title, "md"),
+          mimeType: "text/markdown;charset=utf-8",
+          content: buildMarkdownDocument(meta, markdownBody)
+        };
+      }
+
+      return {
+        filename: buildFilename(meta.title, "json"),
+        mimeType: "application/json;charset=utf-8",
+        content: JSON.stringify({
+          meta: {
+            title: meta.title,
+            pageType: meta.pageType,
+            sourceUrl: location.href,
+            exportedAt: new Date().toISOString()
+          },
+          articleHtml: rawHtml,
+          cleanedHtml: clonedRoot.innerHTML
+        }, null, 2)
+      };
+    } catch (error) {
+      return exportGoogleDocsPlainTextDocument(format, meta, error);
+    }
+  }
+
+  function parseGoogleDocsExportHtml(html) {
+    if (typeof DOMParser !== "function") {
+      throw new Error("当前浏览器不支持 HTML 解析");
+    }
+
+    let parseInput = String(html || "");
+    const trustedTypesApi = globalThis.trustedTypes;
+    if (trustedTypesApi?.createPolicy) {
+      if (!googleDocsTrustedHtmlPolicy) {
+        // The value comes from Google's native export endpoint and is parsed in a detached document.
+        // It is never assigned to the live Google Docs DOM.
+        googleDocsTrustedHtmlPolicy = trustedTypesApi.createPolicy(
+          `local-export-google-docs-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          { createHTML: (value) => value }
+        );
+      }
+      parseInput = googleDocsTrustedHtmlPolicy.createHTML(parseInput);
+    }
+
+    return new DOMParser().parseFromString(parseInput, "text/html");
+  }
+
+  async function exportGoogleDocsPlainTextDocument(format, meta, htmlError) {
+    const textUrl = buildGoogleDocsExportUrl(location.href, "txt");
+    const textBody = normalizeGoogleDocsPlainText(await fetchGoogleDocsExportPlainText(textUrl));
+    if (!textBody) {
+      throw new Error("Google 文档原生导出结果没有正文，请确认当前账号有查看权限");
+    }
+
+    if (format === "markdown") {
+      const fallbackNote = "> 提示：当前浏览器未能解析 Google 文档格式，已自动使用纯文本正文；图片和部分格式未保留。";
+      return {
+        filename: buildFilename(meta.title, "md"),
+        mimeType: "text/markdown;charset=utf-8",
+        content: buildMarkdownDocument(meta, `${fallbackNote}\n\n${textBody}`)
+      };
+    }
+
+    return {
+      filename: buildFilename(meta.title, "json"),
+      mimeType: "application/json;charset=utf-8",
+      content: JSON.stringify({
+        meta: {
+          title: meta.title,
+          pageType: meta.pageType,
+          sourceUrl: location.href,
+          exportedAt: new Date().toISOString(),
+          extractionMode: "plain-text-fallback",
+          htmlError: String(htmlError?.message || "HTML 解析失败")
+        },
+        textContent: textBody
+      }, null, 2)
+    };
+  }
+
+  function normalizeGoogleDocsPlainText(value) {
+    return cleanupMarkdown(
+      stripInvisibleText(String(value || ""))
+        .replace(/\f/g, "\n\n")
+    );
+  }
+
+  function getGoogleDocsMeta() {
+    const titleNode = document.querySelector('[aria-label="重命名"]')
+      || document.querySelector('[aria-label="Rename"]')
+      || document.querySelector(".docs-title-input");
+    const title = normalizeGoogleDocsTitle(
+      titleNode?.value
+      || titleNode?.textContent
+      || document.title
+    );
+
+    return {
+      pageType: "Google 文档",
+      exportType: "google-docs",
+      title,
+      author: "",
+      publishTime: ""
+    };
+  }
+
+  function normalizeGoogleDocsTitle(value) {
+    return stripInvisibleText(String(value || ""))
+      .replace(/\s+-\s+Google\s+(?:文档|Docs).*$/iu, "")
+      .trim() || "未命名 Google 文档";
+  }
+
+  function buildGoogleDocsExportUrl(sourceUrl = location.href, format = "html") {
+    let parsed;
+    try {
+      parsed = new URL(String(sourceUrl || ""));
+    } catch (error) {
+      throw new Error("Google 文档链接无效");
+    }
+
+    const match = parsed.pathname.match(/^\/document\/d\/([^/]+)(?:\/|$)/);
+    if (parsed.hostname !== "docs.google.com" || !match?.[1]) {
+      throw new Error("当前页面不是受支持的 Google 文档");
+    }
+
+    const exportUrl = new URL(`/document/d/${encodeURIComponent(match[1])}/export`, parsed.origin);
+    exportUrl.searchParams.set("format", format === "txt" ? "txt" : "html");
+    const tabId = parsed.searchParams.get("tab");
+    if (tabId) {
+      exportUrl.searchParams.set("tab", tabId);
+    }
+
+    return exportUrl.toString();
+  }
+
+  async function fetchGoogleDocsExportHtml(url) {
+    return fetchGoogleDocsExportContent(url, /text\/html/i, "HTML");
+  }
+
+  async function fetchGoogleDocsExportPlainText(url) {
+    return fetchGoogleDocsExportContent(url, /text\/plain/i, "纯文本");
+  }
+
+  async function fetchGoogleDocsExportContent(url, expectedContentType, formatLabel) {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller?.abort();
+    }, GOOGLE_DOCS_EXPORT_TIMEOUT_MS);
+
+    try {
+      const request = fetch(url, {
+        // Send Docs cookies to the same-origin export route, but omit credentials after its
+        // signed cross-origin redirect so the googleusercontent.com CORS response remains valid.
+        credentials: "same-origin",
+        redirect: "follow",
+        ...(controller ? { signal: controller.signal } : {})
+      }).then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Google 文档原生导出失败: ${response.status}`);
+        }
+
+        const finalUrl = String(response.url || "");
+        if (/^https:\/\/accounts\.google\.com\//i.test(finalUrl)) {
+          throw new Error("Google 文档需要重新登录或当前账号没有查看权限");
+        }
+
+        const contentType = String(response.headers?.get?.("content-type") || "");
+        if (contentType && !expectedContentType.test(contentType)) {
+          throw new Error(`Google 文档${formatLabel}导出返回了不支持的格式: ${contentType}`);
+        }
+
+        return response.text();
+      });
+
+      if (controller) {
+        return await request;
+      }
+
+      return await Promise.race([
+        request,
+        new Promise((resolve, reject) => {
+          setTimeout(() => reject(new Error("Google 文档原生导出超时")), GOOGLE_DOCS_EXPORT_TIMEOUT_MS);
+        })
+      ]);
+    } catch (error) {
+      if (timedOut || error?.name === "AbortError") {
+        throw new Error("Google 文档原生导出超时，请稍后重试");
+      }
+      if (String(error?.message || "").startsWith("Google 文档")) {
+        throw error;
+      }
+      throw new Error(`Google 文档原生导出请求失败: ${getNetworkErrorMessage(error)}`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  function normalizeGoogleDocsExportRoot(root) {
+    for (const paragraph of Array.from(root.querySelectorAll("p.title"))) {
+      const heading = root.ownerDocument.createElement("h1");
+      if (paragraph.id) {
+        heading.id = paragraph.id;
+      }
+      while (paragraph.firstChild) {
+        heading.appendChild(paragraph.firstChild);
+      }
+      paragraph.replaceWith(heading);
+    }
+
+    for (const anchor of Array.from(root.querySelectorAll("a[href]"))) {
+      try {
+        const target = new URL(anchor.getAttribute("href"), location.href);
+        if ((target.hostname === "www.google.com" || target.hostname === "google.com")
+          && target.pathname === "/url"
+          && target.searchParams.get("q")) {
+          anchor.setAttribute("href", target.searchParams.get("q"));
+        }
+      } catch (error) {
+        // Keep the original link when Google exported a non-standard href.
+      }
+    }
   }
 
   async function exportGenericWebDocument(format, options) {
@@ -4023,7 +4316,13 @@
     module.exports = {
       __test: {
         convertBlock,
-        getGenericWebMeta
+        getGenericWebMeta,
+        isGoogleDocsPage,
+        getGoogleDocsMeta,
+        buildGoogleDocsExportUrl,
+        exportGoogleDocsDocument,
+        parseGoogleDocsExportHtml,
+        normalizeGoogleDocsPlainText
       }
     };
   }

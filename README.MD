@@ -3,6 +3,7 @@
 一个可直接加载到 Chrome 的本地导出插件，当前稳定支持：
 
 - 飞书 `docx/wiki` 单篇导出 `Markdown / JSON`
+- Google Docs 文档单篇导出 `Markdown / JSON`
 - 微信公众号单篇文章导出 `Markdown / JSON`
 - 飞书 / 微信文章链接列表批量下载
 - 微信公众号“种子文章 -> 同号 -> 指定日期范围”批量下载
@@ -12,6 +13,11 @@
 
 ## 当前开发血缘
 
+- `2026-09-02`：修复 Google Docs 导出正文为空
+  - 为 `docs.google.com/document/d/*` 增加独立导出流程，不再从画布化编辑器 DOM 抓取工具栏和侧边栏文字
+  - 优先读取 Google 文档原生 HTML 导出结果，保留标题、链接、列表、表格和可选图片
+  - 兼容当前文档 `tab`；HTML 解析失败时自动回退到纯文本正文
+  - 增加 URL 路由、弹窗动作、HTML 正文导出和纯文本回退测试
 - `2026-08-09`：完善本地导出稳定性与航海手册支持
   - 支持从 `scys.com/activity/.../course/...?...chapterId=...` 活动页自动定位航海手册 iframe
   - 使用 `courseId + chapterId` 精确路由课程检测、当前章导出和整专栏导出
@@ -27,6 +33,7 @@
 支持：
 
 - 飞书 `docx/wiki`
+- Google Docs `https://docs.google.com/document/d/*`
 - 微信公众号文章页 `https://mp.weixin.qq.com/s/*`
 
 可选：
@@ -121,7 +128,7 @@
 
 ### 单篇导出
 
-1. 打开飞书文档页或微信公众号文章页
+1. 打开飞书文档、Google Docs 或微信公众号文章页
 2. 点击扩展图标
 3. 选择是否“Markdown 包含图片”
 4. 点击“导出 Markdown”或“导出 JSON”
@@ -129,6 +136,7 @@
 说明：
 
 - 飞书 `Markdown` 走 `client_vars -> block_map -> Markdown`
+- Google Docs `Markdown` 走文档原生 HTML 导出，不读取画布化编辑器 DOM；支持当前 `tab`，并保留标题、链接、列表、表格和可选图片；HTML 解析受浏览器安全策略拦截时会自动回退到纯文本正文
 - 公众号 `Markdown` 走正文 HTML 提取与清洗
 - 公众号带图模式会把图片转成内嵌 `data:` URL
 
@@ -208,6 +216,29 @@
 - 只输入公众号昵称直接抓整号历史
 - 评论、阅读量、点赞、分享等后台统计数据
 
+### Google Docs
+
+当前支持：
+
+- 有查看权限的原生 Google 文档
+- 当前文档标签页的 `Markdown / JSON` 导出
+- 原生导出中的标题、链接、列表、表格和图片
+
+当前不支持：
+
+- Google Sheets / Google Slides
+- 无查看权限或需要重新登录的文档
+
+如果导出的文件仍然为空，或只出现“匹配文档格式”“正在加载”等编辑器界面文字：
+
+1. 打开 `chrome://extensions/`
+2. 找到“文档本地导出”，点击“刷新”
+3. 回到 Google 文档页面并刷新网页
+4. 再次打开扩展，确认页面类型显示为“Google 文档”，主按钮显示“导出当前 Google 文档”
+5. 先关闭“Markdown 包含图片”做一次快速导出；确认正文正常后，再按需开启图片留档
+
+成功标志：导出的 Markdown 包含文档正文，不再包含 Google Docs 工具栏、侧边栏或加载提示文字。
+
 ### 生财课程
 
 当前稳定支持：
@@ -240,7 +271,7 @@
 - `batch-runner.html` / `batch-runner.css` / `batch-runner.js`：批量任务页
 - `background.js`：图片抓取与后台消息
 - `wechat-direct-export.js`：公众号 HTML 直抓解析模块
-- `content-scripts/feishu-exporter.js`：飞书与公众号内容提取主逻辑
+- `content-scripts/feishu-exporter.js`：飞书、Google Docs、公众号和普通网页内容提取主逻辑
 - `icon/`：扩展图标
 - `_locales/zh_CN/messages.json`：本地化资源
 
@@ -256,6 +287,7 @@
 
 当前主要脚本已做过静态检查：
 
+- `for f in tests/*.test.cjs; do node "$f" || exit 1; done`
 - `node --check popup.js`
 - `node --check batch-runner.js`
 - `node --check background.js`

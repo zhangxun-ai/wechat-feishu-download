@@ -208,6 +208,24 @@ async function main() {
     assert.equal(model.secondaryAction, null);
   });
 
+  await test("builds a dedicated export action for Google Docs", async () => {
+    const model = buildPrimaryActionModel({
+      isSupportedPage: true,
+      isWechatMpBackend: false,
+      canExportCourse: false,
+      exportType: "google-docs",
+      pageInfo: {
+        title: "文明上网方案技术交流",
+        docType: "Google 文档",
+        supports: ["markdown"]
+      }
+    });
+
+    assert.equal(model.primaryAction?.key, "export-markdown");
+    assert.equal(model.primaryAction?.label, "导出当前 Google 文档");
+    assert.match(model.summary, /Google 文档正文/);
+  });
+
   await test("routes wechat backend pages to the dedicated wechat workspace", async () => {
     const model = buildPrimaryActionModel({
       isSupportedPage: false,

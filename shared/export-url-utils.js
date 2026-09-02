@@ -18,6 +18,10 @@
         return "wechat";
       }
 
+      if (isGoogleDocsParsedUrl(parsed)) {
+        return "google-docs";
+      }
+
       return "generic-web";
     } catch (error) {
       return "unsupported";
@@ -120,6 +124,11 @@
 
   function isWechatMpBackendParsedUrl(parsed) {
     return parsed.hostname === "mp.weixin.qq.com" && /^\/cgi-bin\//.test(parsed.pathname);
+  }
+
+  function isGoogleDocsParsedUrl(parsed) {
+    return parsed.hostname === "docs.google.com"
+      && /^\/document\/d\/[^/]+(?:\/|$)/.test(parsed.pathname);
   }
 
   function isScysCourseParsedUrl(parsed) {
